@@ -44,6 +44,7 @@ EVENT_SPECS = [
     ("front_foot_strike_frame", "FRONT FOOT STRIKE", (0, 255, 0), "front_foot_strike"),
     ("pelvis_peak_frame", "PELVIS PEAK", (0, 165, 255), "pelvis_peak"),
     ("trunk_peak_frame", "TRUNK PEAK", (0, 0, 255), "trunk_peak"),
+    ("ball_release_frame", "BALL RELEASE", (255, 0, 255), "ball_release"),
 ]
 
 
@@ -93,6 +94,12 @@ def parse_args():
         help="Optional manual original-video frame number for trunk peak.",
     )
     parser.add_argument(
+        "--ball-release-frame",
+        type=int,
+        default=None,
+        help="Optional manual original-video frame number for ball release.",
+    )
+    parser.add_argument(
         "--peak-search-start-ms",
         type=float,
         default=0.0,
@@ -109,6 +116,18 @@ def parse_args():
         type=float,
         default=350.0,
         help="End of trunk peak search window after front foot strike, in milliseconds.",
+    )
+    parser.add_argument(
+        "--ball-release-search-start-ms",
+        type=float,
+        default=30.0,
+        help="Start of ball release search window after trunk peak, in milliseconds.",
+    )
+    parser.add_argument(
+        "--ball-release-search-end-ms",
+        type=float,
+        default=250.0,
+        help="End of ball release search window after trunk peak, in milliseconds.",
     )
     parser.add_argument(
         "--output-dir",
@@ -218,6 +237,11 @@ def lead_ankle_name(throwing_hand):
     return "left_ankle" if throwing_hand == "right" else "right_ankle"
 
 
+def throwing_wrist_name(throwing_hand):
+    """Return the throwing-side wrist landmark name for the throwing hand."""
+    return "right_wrist" if throwing_hand == "right" else "left_wrist"
+
+
 def coordinate_velocity(series, fps):
     """Calculate normalized coordinate velocity per second."""
     if fps <= 0 or len(series) < 2 or series.isna().all():
@@ -313,6 +337,21 @@ def add_lead_ankle_debug(df, fps, throwing_hand):
         stability_scores.append(clamp((0.65 * position_score) + (0.35 * speed_score)))
 
     df["lead_ankle_stability_score"] = stability_scores
+    return df
+
+
+def add_throwing_wrist_debug(df, fps, throwing_hand):
+    """Add throwing wrist velocity and speed debug columns."""
+    df = df.copy()
+    wrist = throwing_wrist_name(throwing_hand)
+    x = df[f"{wrist}_x"].astype(float)
+    y = df[f"{wrist}_y"].astype(float)
+
+    df["throwing_wrist_x_velocity"] = coordinate_velocity(x, fps)
+    df["throwing_wrist_y_velocity"] = coordinate_velocity(y, fps)
+    df["throwing_wrist_speed"] = np.sqrt(
+        df["throwing_wrist_x_velocity"] ** 2 + df["throwing_wrist_y_velocity"] ** 2
+    )
     return df
 
 
@@ -572,6 +611,21 @@ def peak_search_window_frames(front_foot_strike_frame, fps, start_ms, end_ms):
     )
 
 
+def event_search_window_frames(base_frame, fps, start_ms, end_ms):
+    """Convert an event-relative time window into original frame bounds."""
+    if base_frame is None or fps <= 0:
+        return None, None
+    if end_ms < start_ms:
+        raise ValueError("Search end time must be greater than or equal to start time.")
+
+    start_offset_frames = int(math.ceil((start_ms / 1000.0) * fps))
+    end_offset_frames = int(math.floor((end_ms / 1000.0) * fps))
+    return (
+        int(base_frame + start_offset_frames),
+        int(base_frame + end_offset_frames),
+    )
+
+
 def peak_in_frame_window(df, series_name, start_frame, end_frame):
     """Return the original-video frame with max absolute value inside a frame window."""
     if start_frame is None or end_frame is None:
@@ -585,6 +639,154 @@ def peak_in_frame_window(df, series_name, start_frame, end_frame):
 
     peak_index = search[series_name].abs().idxmax()
     return int(search.loc[peak_index, "frame"])
+
+
+def max_value_frame_in_window(df, series_name, start_frame, end_frame):
+    """Return the original-video frame with the maximum value inside a frame window."""
+    if start_frame is None or end_frame is None:
+        return None
+
+    search_df = df[(df["frame"] >= start_frame) & (df["frame"] <= end_frame)]
+    search = search_df[["frame", series_name]].dropna()
+    if search.empty:
+        return None
+
+    peak_index = search[series_name].idxmax()
+    return int(search.loc[peak_index, "frame"])
+
+
+def value_at_frame(df, frame_number, column_name):
+    """Return a dataframe value at an original-video frame, or None."""
+    if frame_number is None or column_name not in df.columns:
+        return None
+
+    rows = df[df["frame"] == frame_number]
+    if rows.empty:
+        return None
+
+    value = rows.iloc[0][column_name]
+    if pd.isna(value):
+        return None
+    return float(value)
+
+
+def ball_release_confidence_from_peak(
+    df,
+    throwing_hand,
+    selected_frame,
+    search_start_frame,
+    search_end_frame,
+    wrist_speed,
+):
+    """Estimate confidence for approximate ball release from wrist speed shape."""
+    if selected_frame is None or wrist_speed is None:
+        return 0.0, "No valid throwing wrist speed peak was found."
+
+    wrist = throwing_wrist_name(throwing_hand)
+    visibility = value_at_frame(df, selected_frame, f"{wrist}_visibility")
+    visibility_score = clamp(visibility if visibility is not None else 0.0)
+
+    selected_rows = df.index[df["frame"] == selected_frame].tolist()
+    if not selected_rows:
+        return 0.0, "Selected ball release frame was not present in the processed data."
+
+    row_position = selected_rows[0]
+    nearby_start = max(0, row_position - 3)
+    nearby_end = min(len(df), row_position + 4)
+    nearby = df.iloc[nearby_start:nearby_end]["throwing_wrist_speed"].dropna()
+    nearby_without_peak = nearby.drop(index=df.index[row_position], errors="ignore")
+    nearby_baseline = float(nearby_without_peak.median()) if not nearby_without_peak.empty else 0.0
+
+    if wrist_speed <= 0:
+        peak_clarity_score = 0.0
+    else:
+        peak_clarity_score = clamp((wrist_speed - nearby_baseline) / wrist_speed)
+
+    first_frame_penalty = 0.25 if selected_frame == search_start_frame else 0.0
+    confidence = (
+        (0.55 * peak_clarity_score)
+        + (0.35 * visibility_score)
+        + 0.10
+        - first_frame_penalty
+    )
+    confidence = round(clamp(confidence), 3)
+
+    reason = (
+        f"Selected frame {selected_frame} from ball release search window "
+        f"{search_start_frame}-{search_end_frame}. "
+        f"wrist_speed={wrist_speed:.4f}. "
+        f"nearby_median_speed={nearby_baseline:.4f}. "
+        f"peak_clarity_score={peak_clarity_score:.3f}. "
+        f"visibility={visibility_score:.3f}. "
+        f"selected_at_first_search_frame={selected_frame == search_start_frame}."
+    )
+    if selected_frame == search_start_frame:
+        reason += " Confidence reduced because the peak was at the first frame of the search window."
+    if peak_clarity_score < 0.35:
+        reason += " Confidence reduced because the wrist speed peak was not clearly above nearby frames."
+    if visibility_score < 0.60:
+        reason += " Confidence reduced because throwing wrist visibility was low."
+
+    return confidence, reason
+
+
+def detect_ball_release(
+    df,
+    throwing_hand,
+    trunk_peak_frame,
+    fps,
+    search_start_ms,
+    search_end_ms,
+):
+    """Approximate ball release as max throwing wrist speed after trunk peak."""
+    search_start_frame, search_end_frame = event_search_window_frames(
+        trunk_peak_frame,
+        fps,
+        search_start_ms,
+        search_end_ms,
+    )
+    auto_frame = max_value_frame_in_window(
+        df,
+        "throwing_wrist_speed",
+        search_start_frame,
+        search_end_frame,
+    )
+    retry_used = False
+
+    if auto_frame is not None and trunk_peak_frame is not None and auto_frame == trunk_peak_frame:
+        retry_used = True
+        retry_start_frame = trunk_peak_frame + 2
+        if search_start_frame is None:
+            search_start_frame = retry_start_frame
+        else:
+            search_start_frame = max(search_start_frame, retry_start_frame)
+        auto_frame = max_value_frame_in_window(
+            df,
+            "throwing_wrist_speed",
+            search_start_frame,
+            search_end_frame,
+        )
+
+    wrist_speed = value_at_frame(df, auto_frame, "throwing_wrist_speed")
+    confidence, reason = ball_release_confidence_from_peak(
+        df,
+        throwing_hand,
+        auto_frame,
+        search_start_frame,
+        search_end_frame,
+        wrist_speed,
+    )
+    if retry_used:
+        reason += " Initial auto release matched trunk peak, so search start was moved at least 2 frames later and retried."
+
+    return {
+        "frame": auto_frame,
+        "confidence": confidence,
+        "reason": reason,
+        "wrist_speed": wrist_speed,
+        "search_start_frame": search_start_frame,
+        "search_end_frame": search_end_frame,
+    }
 
 
 def sequence_message(front_foot_strike_frame, pelvis_peak_frame, trunk_peak_frame):
@@ -612,6 +814,13 @@ def frame_to_time(frame_number, fps):
     if frame_number is None or fps <= 0:
         return None
     return frame_number / fps
+
+
+def milliseconds_between(later_frame, earlier_frame, fps):
+    """Calculate elapsed milliseconds between two original-video frame numbers."""
+    if later_frame is None or earlier_frame is None or fps <= 0:
+        return None
+    return ((later_frame - earlier_frame) / fps) * 1000.0
 
 
 def extract_landmarks(video_path, fps, start_frame, end_frame):
@@ -737,6 +946,7 @@ def add_calculations(df, fps, smoothing_window, throwing_hand):
     )
 
     df = add_lead_ankle_debug(df, fps, throwing_hand)
+    df = add_throwing_wrist_debug(df, fps, throwing_hand)
     return df
 
 
@@ -758,9 +968,12 @@ def build_timing_report(
     manual_front_foot_strike_frame,
     manual_pelvis_peak_frame,
     manual_trunk_peak_frame,
+    manual_ball_release_frame,
     peak_search_start_ms,
     pelvis_peak_search_end_ms,
     trunk_peak_search_end_ms,
+    ball_release_search_start_ms,
+    ball_release_search_end_ms,
 ):
     """Detect or accept event frames and build the JSON-ready timing report."""
     auto_front_foot_strike = detect_front_foot_strike(df, throwing_hand, fps)
@@ -814,6 +1027,37 @@ def build_timing_report(
         manual_trunk_peak_frame, auto_trunk_peak_frame
     )
 
+    auto_ball_release = detect_ball_release(
+        df,
+        throwing_hand,
+        trunk_peak_frame,
+        fps,
+        ball_release_search_start_ms,
+        ball_release_search_end_ms,
+    )
+    auto_ball_release_frame = auto_ball_release["frame"]
+    ball_release_frame, ball_release_method = choose_event(
+        manual_ball_release_frame,
+        auto_ball_release_frame,
+    )
+    ball_release_wrist_speed = value_at_frame(
+        df,
+        ball_release_frame,
+        "throwing_wrist_speed",
+    )
+
+    if manual_ball_release_frame is not None:
+        ball_release_confidence = 1.0
+        ball_release_debug_reason = (
+            f"Manual override used for ball release. "
+            f"Auto detection suggested frame {auto_ball_release_frame} "
+            f"with confidence {auto_ball_release['confidence']}. "
+            f"Auto reason: {auto_ball_release['reason']}"
+        )
+    else:
+        ball_release_confidence = auto_ball_release["confidence"]
+        ball_release_debug_reason = auto_ball_release["reason"]
+
     return {
         "fps": fps,
         "original_total_frames": int(original_total_frames),
@@ -823,22 +1067,42 @@ def build_timing_report(
         "peak_search_start_ms": peak_search_start_ms,
         "pelvis_peak_search_end_ms": pelvis_peak_search_end_ms,
         "trunk_peak_search_end_ms": trunk_peak_search_end_ms,
+        "ball_release_search_start_ms": ball_release_search_start_ms,
+        "ball_release_search_end_ms": ball_release_search_end_ms,
         "pelvis_peak_search_start_frame": pelvis_search_start_frame,
         "pelvis_peak_search_end_frame": pelvis_search_end_frame,
         "trunk_peak_search_start_frame": trunk_search_start_frame,
         "trunk_peak_search_end_frame": trunk_search_end_frame,
+        "ball_release_search_start_frame": auto_ball_release["search_start_frame"],
+        "ball_release_search_end_frame": auto_ball_release["search_end_frame"],
         "front_foot_strike_confidence": front_foot_strike_confidence,
         "front_foot_strike_auto_candidates": auto_front_foot_strike["candidates"],
         "front_foot_strike_debug_reason": front_foot_strike_debug_reason,
         "front_foot_strike_frame": front_foot_strike_frame,
         "pelvis_peak_frame": pelvis_peak_frame,
         "trunk_peak_frame": trunk_peak_frame,
+        "ball_release_frame": ball_release_frame,
+        "ball_release_confidence": ball_release_confidence,
+        "ball_release_debug_reason": ball_release_debug_reason,
+        "ball_release_wrist_speed": ball_release_wrist_speed,
         "front_foot_strike_detection_method": front_foot_method,
         "pelvis_peak_detection_method": pelvis_method,
         "trunk_peak_detection_method": trunk_method,
+        "ball_release_detection_method": ball_release_method,
         "front_foot_strike_time": frame_to_time(front_foot_strike_frame, fps),
         "pelvis_peak_time": frame_to_time(pelvis_peak_frame, fps),
         "trunk_peak_time": frame_to_time(trunk_peak_frame, fps),
+        "ball_release_time": frame_to_time(ball_release_frame, fps),
+        "trunk_to_ball_release_ms": milliseconds_between(
+            ball_release_frame,
+            trunk_peak_frame,
+            fps,
+        ),
+        "ffs_to_ball_release_ms": milliseconds_between(
+            ball_release_frame,
+            front_foot_strike_frame,
+            fps,
+        ),
         "sequence_result": sequence_message(
             front_foot_strike_frame,
             pelvis_peak_frame,
@@ -886,6 +1150,7 @@ def write_angles_plot(df, report, output_path):
         ("front_foot_strike_frame", "Front foot strike", "green"),
         ("pelvis_peak_frame", "Pelvis peak", "orange"),
         ("trunk_peak_frame", "Trunk peak", "red"),
+        ("ball_release_frame", "Ball release", "magenta"),
     ]
 
     for report_key, label, color in event_lines:
@@ -1193,9 +1458,12 @@ def main():
         manual_front_foot_strike_frame=args.front_foot_strike_frame,
         manual_pelvis_peak_frame=args.pelvis_peak_frame,
         manual_trunk_peak_frame=args.trunk_peak_frame,
+        manual_ball_release_frame=args.ball_release_frame,
         peak_search_start_ms=args.peak_search_start_ms,
         pelvis_peak_search_end_ms=args.pelvis_peak_search_end_ms,
         trunk_peak_search_end_ms=args.trunk_peak_search_end_ms,
+        ball_release_search_start_ms=args.ball_release_search_start_ms,
+        ball_release_search_end_ms=args.ball_release_search_end_ms,
     )
 
     df.to_csv(landmarks_csv_path, index=False)

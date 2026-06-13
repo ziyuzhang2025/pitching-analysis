@@ -11,6 +11,7 @@ The goal is to help inspect basic pitching sequence timing:
 - front foot strike
 - pelvis peak rotation
 - trunk peak rotation
+- approximate ball release
 
 Everything runs on your local machine. There is no cloud API and no API key.
 
@@ -23,6 +24,7 @@ Everything runs on your local machine. There is no cloud API and no API key.
 - Front foot strike manual calibration
 - Front foot strike confidence and debug signals
 - Pelvis/trunk peak search windows
+- Approximate ball release from throwing wrist speed
 - Pose overlay video
 - Event review frames
 - Multi-report summary CSV
@@ -99,6 +101,12 @@ Generate a check overlay:
 
 ```bash
 python analyze_pitch_timing.py videos/IMG_1322.MOV --throwing-hand right --start-time 46 --end-time 48 --output-prefix pitch_03_check
+```
+
+Run an analysis that includes approximate ball release:
+
+```bash
+python analyze_pitch_timing.py videos/IMG_1322.MOV --throwing-hand right --start-time 46 --end-time 48 --output-prefix pitch_03_release
 ```
 
 Run calibrated, windowed timing analysis:
@@ -197,6 +205,9 @@ The script also calculates:
 - lead ankle y velocity
 - lead ankle speed
 - lead ankle stability score
+- throwing wrist x velocity
+- throwing wrist y velocity
+- throwing wrist speed
 
 Angle unwrapping helps avoid artificial jumps when angles cross the -180/180
 degree boundary.
@@ -239,6 +250,21 @@ foot strike so follow-through frames are less likely to be selected. Defaults:
 Manual `--pelvis-peak-frame` and `--trunk-peak-frame` values can override the
 automatic peak search when needed.
 
+Ball release is an approximation based on the throwing-side wrist:
+
+- right-handed pitcher: `right_wrist`
+- left-handed pitcher: `left_wrist`
+
+The script searches from `--ball-release-search-start-ms 30` to
+`--ball-release-search-end-ms 250` after trunk peak and selects the frame with
+maximum throwing wrist speed. Use `--ball-release-frame` to manually override
+this approximation.
+
+Ball release confidence is included in `timing_report.json`. Low confidence
+means the selected wrist-speed peak may be ambiguous, at the edge of the search
+window, or based on low-visibility wrist landmarks, so the release frame should
+be visually confirmed in `pose_overlay.mp4` or the event review frames.
+
 ## Limitations
 
 - 2D single-camera analysis only
@@ -246,13 +272,14 @@ automatic peak search when needed.
 - Not medical advice
 - Does not calculate elbow force
 - Does not calculate layback yet
+- Ball release detection is approximate and based on wrist speed only
 - Not using OpenBiomechanics/Driveline reference data yet
 
 This is a first-pass timing tool, not a validated biomechanics model.
 
 ## Future Work
 
-- Ball release detection
+- More accurate ball release detection
 - Layback angle
 - Hip-shoulder separation
 - Better front foot strike auto detection
