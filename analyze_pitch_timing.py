@@ -206,6 +206,28 @@ def angular_velocity_degrees_per_second(angle_degrees, fps):
     return pd.Series(velocity, index=angle_degrees.index)
 
 
+def clamp(value, low=0.0, high=1.0):
+    """Clamp a numeric value into a bounded range."""
+    if pd.isna(value):
+        return low
+    return max(low, min(high, float(value)))
+
+
+def lead_ankle_name(throwing_hand):
+    """Return the lead ankle landmark name for the throwing hand."""
+    return "left_ankle" if throwing_hand == "right" else "right_ankle"
+
+
+def coordinate_velocity(series, fps):
+    """Calculate normalized coordinate velocity per second."""
+    if fps <= 0 or len(series) < 2 or series.isna().all():
+        return pd.Series(np.nan, index=series.index)
+
+    filled = series.astype(float).interpolate(limit_direction="both")
+    velocity = np.gradient(filled.to_numpy()) * fps
+    return pd.Series(velocity, index=series.index)
+
+
 def get_video_info(video_path):
     """Open the video long enough to read FPS, frame count, width, and height."""
     cap = cv2.VideoCapture(str(video_path))
@@ -246,46 +268,293 @@ def resolve_processing_range(fps, original_total_frames, start_time, end_time):
     return start_frame, end_frame, processed_start_time, processed_end_time
 
 
-def detect_front_foot_strike(df, throwing_hand):
-    """
-    Approximate front foot strike from the lead ankle's y position.
+def add_lead_ankle_debug(df, fps, throwing_hand):
+    """Add lead ankle velocity, speed, and stability debug columns."""
+    df = df.copy()
+    lead_ankle = lead_ankle_name(throwing_hand)
+    x = df[f"{lead_ankle}_x"].astype(float)
+    y = df[f"{lead_ankle}_y"].astype(float)
 
-    For a right-handed pitcher, the lead foot is usually the left foot.
-    For a left-handed pitcher, the lead foot is usually the right foot.
+    df["lead_ankle_x_velocity"] = coordinate_velocity(x, fps)
+    df["lead_ankle_y_velocity"] = coordinate_velocity(y, fps)
+    df["lead_ankle_speed"] = np.sqrt(
+        df["lead_ankle_x_velocity"] ** 2 + df["lead_ankle_y_velocity"] ** 2
+    )
 
-    MediaPipe y coordinates are normalized image coordinates where larger y
-    means lower in the image. This function looks for a local maximum in lead
-    ankle y, followed by at least 5 frames where the ankle stays roughly stable.
-    """
-    lead_ankle = "left_ankle" if throwing_hand == "right" else "right_ankle"
-    y = df[f"{lead_ankle}_y"].astype(float).interpolate(limit_direction="both")
+    if x.isna().all() or y.isna().all():
+        df["lead_ankle_stability_score"] = np.nan
+        return df
 
-    if y.isna().all():
-        return None
-
+    x_filled = x.interpolate(limit_direction="both").to_numpy()
+    y_filled = y.interpolate(limit_direction="both").to_numpy()
+    speed = df["lead_ankle_speed"].to_numpy()
     stable_frames_required = 5
-    # Normalized image coordinates usually range 0-1. This tolerance is a
-    # simple MVP threshold for "not moving much vertically."
-    stability_tolerance = 0.015
+    stability_scores = []
 
-    values = y.to_numpy()
-    total = len(values)
+    for row_position in range(len(df)):
+        window_end = min(len(df), row_position + stable_frames_required)
+        x_window = x_filled[row_position:window_end]
+        y_window = y_filled[row_position:window_end]
+        speed_window = speed[row_position:window_end]
 
-    for row_position in range(1, total - stable_frames_required):
-        previous_y = values[row_position - 1]
-        current_y = values[row_position]
-        next_values = values[row_position + 1 : row_position + 1 + stable_frames_required]
+        if len(x_window) < 2 or np.isnan(x_window).all() or np.isnan(y_window).all():
+            stability_scores.append(np.nan)
+            continue
 
-        is_local_maximum = current_y >= previous_y and current_y >= np.nanmax(next_values)
-        becomes_stable = np.nanmax(next_values) - np.nanmin(next_values) <= stability_tolerance
+        x_range = np.nanmax(x_window) - np.nanmin(x_window)
+        y_range = np.nanmax(y_window) - np.nanmin(y_window)
+        position_range = math.hypot(x_range, y_range)
+        mean_speed = np.nanmean(speed_window)
 
-        if is_local_maximum and becomes_stable:
-            return int(df.iloc[row_position]["frame"])
+        # Normalized image coordinates usually range 0-1. These simple MVP
+        # thresholds treat a small future position range and low speed as stable.
+        position_score = 1.0 - min(1.0, position_range / 0.05)
+        speed_score = 1.0 - min(1.0, mean_speed / 0.75)
+        stability_scores.append(clamp((0.65 * position_score) + (0.35 * speed_score)))
 
-    # Fallback: if the local-maximum-and-stability rule fails, use the lowest
-    # visible lead ankle position inside the processed segment.
-    fallback_position = int(np.nanargmax(values))
-    return int(df.iloc[fallback_position]["frame"])
+    df["lead_ankle_stability_score"] = stability_scores
+    return df
+
+
+def safe_percentile(values, percentile, default):
+    """Return a percentile from finite values, or a default if none exist."""
+    finite_values = np.asarray(values, dtype=float)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if len(finite_values) == 0:
+        return default
+    return float(np.nanpercentile(finite_values, percentile))
+
+
+def candidate_metric(values, row_position, window_size, mode="mean"):
+    """Read a small future or previous metric window safely."""
+    window = np.asarray(values[row_position : row_position + window_size], dtype=float)
+    window = window[np.isfinite(window)]
+    if len(window) == 0:
+        return np.nan
+    if mode == "max":
+        return float(np.nanmax(window))
+    return float(np.nanmean(window))
+
+
+def rotation_increase_score(df, row_position, fps):
+    """Score whether hip/shoulder angular velocity rises after a candidate."""
+    next_frames = max(1, int(round(0.300 * fps)))
+    previous_frames = max(1, int(round(0.100 * fps)))
+    rotation = (
+        df["hip_angular_velocity"].abs().fillna(0)
+        + df["shoulder_angular_velocity"].abs().fillna(0)
+    ).to_numpy()
+
+    previous_start = max(0, row_position - previous_frames)
+    previous_peak = candidate_metric(rotation, previous_start, row_position - previous_start, "max")
+    future_peak = candidate_metric(rotation, row_position, next_frames, "max")
+
+    if pd.isna(previous_peak) or pd.isna(future_peak) or future_peak <= 0:
+        return 0.0, 0.0, 0.0
+
+    score = clamp((future_peak - previous_peak) / (future_peak + 1e-6))
+    return score, float(previous_peak), float(future_peak)
+
+
+def build_front_foot_candidate(
+    df,
+    row_position,
+    throwing_hand,
+    fps,
+    speed_threshold,
+    y_stable_threshold,
+    downward_threshold,
+):
+    """Build one candidate score for front foot strike."""
+    lead_ankle = lead_ankle_name(throwing_hand)
+    stable_frames_required = 5
+
+    speed_values = df["lead_ankle_speed"].to_numpy()
+    y_velocity_values = df["lead_ankle_y_velocity"].to_numpy()
+    visibility_values = df[f"{lead_ankle}_visibility"].to_numpy()
+
+    future_speed = candidate_metric(speed_values, row_position, stable_frames_required)
+    future_y_abs = candidate_metric(
+        np.abs(y_velocity_values),
+        row_position,
+        stable_frames_required,
+    )
+    previous_start = max(0, row_position - 3)
+    previous_y_velocity = candidate_metric(
+        y_velocity_values,
+        previous_start,
+        row_position - previous_start,
+    )
+    visibility = candidate_metric(visibility_values, row_position, stable_frames_required)
+    stability = df.iloc[row_position]["lead_ankle_stability_score"]
+
+    speed_drop_score = clamp((speed_threshold * 1.5 - future_speed) / (speed_threshold * 1.5))
+    downward_score = clamp(previous_y_velocity / downward_threshold)
+    stable_y_score = clamp((y_stable_threshold * 1.5 - future_y_abs) / (y_stable_threshold * 1.5))
+    y_transition_score = (0.55 * stable_y_score) + (0.45 * downward_score)
+    rotation_score, previous_rotation_peak, future_rotation_peak = rotation_increase_score(
+        df,
+        row_position,
+        fps,
+    )
+    visibility_score = clamp(visibility)
+
+    score = (
+        (0.30 * clamp(stability))
+        + (0.20 * speed_drop_score)
+        + (0.20 * y_transition_score)
+        + (0.25 * rotation_score)
+        + (0.05 * visibility_score)
+    )
+    score *= 0.40 + (0.60 * visibility_score)
+    score = clamp(score)
+
+    rule_matched = (
+        clamp(stability) >= 0.45
+        and future_speed <= speed_threshold * 1.25
+        and downward_score >= 0.15
+        and stable_y_score >= 0.35
+        and y_transition_score >= 0.35
+        and rotation_score >= 0.10
+    )
+
+    return {
+        "frame": int(df.iloc[row_position]["frame"]),
+        "processed_frame": int(df.iloc[row_position]["processed_frame"]),
+        "score": round(score, 3),
+        "stability_score": round(clamp(stability), 3),
+        "speed": round(float(future_speed), 4) if not pd.isna(future_speed) else None,
+        "speed_threshold": round(float(speed_threshold), 4),
+        "downward_score": round(downward_score, 3),
+        "stable_y_score": round(stable_y_score, 3),
+        "y_velocity_before": (
+            round(float(previous_y_velocity), 4)
+            if not pd.isna(previous_y_velocity)
+            else None
+        ),
+        "y_velocity_after_abs": round(float(future_y_abs), 4) if not pd.isna(future_y_abs) else None,
+        "rotation_increase_score": round(rotation_score, 3),
+        "rotation_peak_before": round(previous_rotation_peak, 3),
+        "rotation_peak_after": round(future_rotation_peak, 3),
+        "visibility": round(visibility_score, 3),
+        "rule_matched": bool(rule_matched),
+    }
+
+
+def detect_front_foot_strike(df, throwing_hand, fps):
+    """
+    Approximate front foot strike using lead ankle stability plus rotation onset.
+
+    This is still a simple rule-based MVP. It looks for the lead ankle becoming
+    stable, lead ankle speed dropping, y velocity settling after downward motion,
+    and hip/shoulder angular velocity increasing within the next 300 ms.
+    """
+    lead_ankle = lead_ankle_name(throwing_hand)
+    y = df[f"{lead_ankle}_y"].astype(float)
+    if y.isna().all():
+        return {
+            "frame": None,
+            "confidence": 0.0,
+            "candidates": [],
+            "reason": "No lead ankle landmarks were detected.",
+        }
+
+    speed = df["lead_ankle_speed"].to_numpy()
+    y_velocity = df["lead_ankle_y_velocity"].to_numpy()
+    abs_y_velocity = np.abs(y_velocity)
+
+    speed_threshold = max(0.20, safe_percentile(speed, 35, 0.35))
+    y_stable_threshold = max(0.08, safe_percentile(abs_y_velocity, 35, 0.15))
+    downward_threshold = max(0.10, safe_percentile(y_velocity[y_velocity > 0], 50, 0.20))
+
+    scored_candidates = []
+    for row_position in range(1, max(1, len(df) - 4)):
+        candidate = build_front_foot_candidate(
+            df,
+            row_position,
+            throwing_hand,
+            fps,
+            speed_threshold,
+            y_stable_threshold,
+            downward_threshold,
+        )
+        scored_candidates.append(candidate)
+
+    if not scored_candidates:
+        return {
+            "frame": None,
+            "confidence": 0.0,
+            "candidates": [],
+            "reason": "Not enough processed frames to score front foot strike.",
+        }
+
+    rule_matches = [candidate for candidate in scored_candidates if candidate["rule_matched"]]
+    candidates_to_rank = rule_matches if rule_matches else scored_candidates
+    candidates_to_rank = sorted(candidates_to_rank, key=lambda item: item["score"], reverse=True)
+    best_score_candidate = candidates_to_rank[0]
+    best_score = best_score_candidate["score"]
+    similar_candidates = [
+        candidate
+        for candidate in candidates_to_rank
+        if best_score - candidate["score"] <= 0.05
+    ]
+    earliest_reasonable_candidates = [
+        candidate
+        for candidate in similar_candidates
+        if (
+            candidate["rule_matched"]
+            and candidate["stability_score"] >= 0.85
+            and candidate["speed"] is not None
+            and candidate["speed_threshold"] is not None
+            and candidate["speed"] <= candidate["speed_threshold"]
+            and candidate["visibility"] >= 0.80
+        )
+    ]
+    earliest_similar_selection_used = bool(earliest_reasonable_candidates)
+
+    if earliest_similar_selection_used:
+        best = sorted(earliest_reasonable_candidates, key=lambda item: item["frame"])[0]
+    else:
+        best = best_score_candidate
+
+    confidence = best["score"]
+    if not best["rule_matched"]:
+        confidence = min(confidence, 0.35)
+    if len(similar_candidates) > 1:
+        confidence -= min(0.25, 0.06 * (len(similar_candidates) - 1))
+    if best["visibility"] < 0.60:
+        confidence *= 0.75
+    confidence = round(clamp(confidence), 3)
+
+    shown_candidates = candidates_to_rank[:8] if rule_matches else candidates_to_rank[:5]
+    candidate_type = "rule-matched" if rule_matches else "fallback scored"
+    reason = (
+        f"Selected frame {best['frame']} from {len(rule_matches)} rule-matched candidates. "
+        f"Candidate type: {candidate_type}. "
+        f"best_score={best_score}. "
+        f"similar_candidates={len(similar_candidates)}. "
+        f"earliest_similar_candidate_selection_used={earliest_similar_selection_used}. "
+        f"selected_frame={best['frame']}. "
+        f"Stability={best['stability_score']}, speed={best['speed']} "
+        f"(threshold {best['speed_threshold']}), "
+        f"rotation_increase_score={best['rotation_increase_score']}, "
+        f"visibility={best['visibility']}."
+    )
+    if earliest_similar_selection_used:
+        reason += " Earliest high-quality similar candidate was selected."
+    if len(similar_candidates) > 1:
+        reason += f" Confidence reduced because {len(similar_candidates)} candidates had similar scores."
+    if best["visibility"] < 0.60:
+        reason += " Confidence reduced because lead ankle visibility was low."
+    if not best["rule_matched"]:
+        reason += " No candidate satisfied every rule, so the best fallback score was used."
+
+    return {
+        "frame": int(best["frame"]),
+        "confidence": confidence,
+        "candidates": shown_candidates,
+        "reason": reason,
+    }
 
 
 def peak_search_window_frames(front_foot_strike_frame, fps, start_ms, end_ms):
@@ -424,7 +693,7 @@ def extract_landmarks(video_path, fps, start_frame, end_frame):
     return pd.DataFrame(rows), landmark_detection_rate
 
 
-def add_calculations(df, fps, smoothing_window):
+def add_calculations(df, fps, smoothing_window, throwing_hand):
     """Add raw angles, unwrapped angles, smoothed angles, and velocities."""
     df = df.copy()
 
@@ -467,6 +736,7 @@ def add_calculations(df, fps, smoothing_window):
         df["hip_angle_smoothed"], fps
     )
 
+    df = add_lead_ankle_debug(df, fps, throwing_hand)
     return df
 
 
@@ -493,10 +763,23 @@ def build_timing_report(
     trunk_peak_search_end_ms,
 ):
     """Detect or accept event frames and build the JSON-ready timing report."""
-    auto_front_foot_strike_frame = detect_front_foot_strike(df, throwing_hand)
+    auto_front_foot_strike = detect_front_foot_strike(df, throwing_hand, fps)
+    auto_front_foot_strike_frame = auto_front_foot_strike["frame"]
     front_foot_strike_frame, front_foot_method = choose_event(
         manual_front_foot_strike_frame, auto_front_foot_strike_frame
     )
+
+    if manual_front_foot_strike_frame is not None:
+        front_foot_strike_confidence = 1.0
+        front_foot_strike_debug_reason = (
+            f"Manual override used for front foot strike. "
+            f"Auto detection suggested frame {auto_front_foot_strike_frame} "
+            f"with confidence {auto_front_foot_strike['confidence']}. "
+            f"Auto reason: {auto_front_foot_strike['reason']}"
+        )
+    else:
+        front_foot_strike_confidence = auto_front_foot_strike["confidence"]
+        front_foot_strike_debug_reason = auto_front_foot_strike["reason"]
 
     pelvis_search_start_frame, pelvis_search_end_frame = peak_search_window_frames(
         front_foot_strike_frame,
@@ -544,6 +827,9 @@ def build_timing_report(
         "pelvis_peak_search_end_frame": pelvis_search_end_frame,
         "trunk_peak_search_start_frame": trunk_search_start_frame,
         "trunk_peak_search_end_frame": trunk_search_end_frame,
+        "front_foot_strike_confidence": front_foot_strike_confidence,
+        "front_foot_strike_auto_candidates": auto_front_foot_strike["candidates"],
+        "front_foot_strike_debug_reason": front_foot_strike_debug_reason,
         "front_foot_strike_frame": front_foot_strike_frame,
         "pelvis_peak_frame": pelvis_peak_frame,
         "trunk_peak_frame": trunk_peak_frame,
@@ -646,6 +932,10 @@ def draw_exact_event_label(frame_bgr, original_frame, report):
     for report_key, label, color, _slug in EVENT_SPECS:
         event_frame = report.get(report_key)
         if event_frame is not None and original_frame == event_frame:
+            if report_key == "front_foot_strike_frame":
+                confidence = report.get("front_foot_strike_confidence")
+                if confidence is not None:
+                    label = f"{label} CONF {confidence:.2f}"
             cv2.putText(
                 frame_bgr,
                 label,
@@ -665,6 +955,10 @@ def draw_event_labels(frame_bgr, original_frame, report):
     for report_key, label, color, _slug in EVENT_SPECS:
         event_frame = report.get(report_key)
         if event_frame is not None and event_frame <= original_frame < event_frame + 5:
+            if report_key == "front_foot_strike_frame":
+                confidence = report.get("front_foot_strike_confidence")
+                if confidence is not None:
+                    label = f"{label} CONF {confidence:.2f}"
             cv2.putText(
                 frame_bgr,
                 label,
@@ -886,7 +1180,7 @@ def main():
     )
 
     df, landmark_detection_rate = extract_landmarks(video_path, fps, start_frame, end_frame)
-    df = add_calculations(df, fps, args.smoothing_window)
+    df = add_calculations(df, fps, args.smoothing_window, args.throwing_hand)
 
     report = build_timing_report(
         df=df,

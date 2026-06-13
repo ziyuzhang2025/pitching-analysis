@@ -21,6 +21,7 @@ Everything runs on your local machine. There is no cloud API and no API key.
 - Shoulder/hip angle calculation
 - Angle unwrapping
 - Front foot strike manual calibration
+- Front foot strike confidence and debug signals
 - Pelvis/trunk peak search windows
 - Pose overlay video
 - Event review frames
@@ -112,6 +113,20 @@ Summarize trusted windowed reports:
 python summarize_pitch_reports.py --filename-contains windowed --require-manual-front-foot-strike
 ```
 
+## Front Foot Strike Evaluation
+
+Evaluate automatic front foot strike detection against the manually labeled
+ground truth frames included in `evaluate_front_foot_strike.py`:
+
+```bash
+python evaluate_front_foot_strike.py
+```
+
+This runs `analyze_pitch_timing.py` automatically for each labeled pitch without
+passing `--front-foot-strike-frame`, then writes:
+
+- `outputs/front_foot_strike_evaluation.csv`
+
 ## Sample Result
 
 Example terminal output from a filtered report summary:
@@ -178,6 +193,10 @@ The script also calculates:
 - smoothed hip angle
 - shoulder angular velocity
 - hip angular velocity
+- lead ankle x velocity
+- lead ankle y velocity
+- lead ankle speed
+- lead ankle stability score
 
 Angle unwrapping helps avoid artificial jumps when angles cross the -180/180
 degree boundary.
@@ -188,6 +207,20 @@ Front foot strike is approximated automatically from the lead ankle:
 
 - right-handed pitcher: lead foot is the left ankle
 - left-handed pitcher: lead foot is the right ankle
+
+The automatic detector is a simple rule-based score. It looks for:
+
+- the lead ankle becoming stable for several frames
+- lead ankle speed dropping below a threshold
+- lead ankle y velocity changing from downward motion to stable motion
+- hip/shoulder angular velocity increasing within the next 300 ms
+- acceptable lead ankle landmark visibility
+
+The timing report includes:
+
+- `front_foot_strike_confidence`
+- `front_foot_strike_auto_candidates`
+- `front_foot_strike_debug_reason`
 
 Because automatic front foot strike detection can be unreliable, the script
 supports manual calibration:
