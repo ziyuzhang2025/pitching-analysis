@@ -248,6 +248,15 @@ separation. The signed value can flip near +/-180 degrees, so the absolute
 separation values and quality warning in `timing_report.json` should be used
 when interpreting this metric.
 
+Raw signed and absolute 2D separation can still be misleading because they do
+not know whether the pelvis or shoulder/trunk is leading. Directional
+hip-shoulder separation estimates the pelvis-opening direction and then reports
+pelvis-leading separation in that direction. Positive directional separation
+means the pelvis is leading the shoulder/trunk in the detected opening
+direction. Negative or opposite-direction values are not treated as valid max
+stretch values. This is still a 2D camera-view proxy, not true 3D
+hip-shoulder separation.
+
 The pose overlay video displays signed and absolute 2D hip-shoulder separation
 values on each frame. It also displays the 2D pelvis line angle and
 shoulder/trunk line angle used to compute the separation proxy. Delivery-window
@@ -255,14 +264,32 @@ max separation is searched from front foot strike through the frame before trunk
 peak; this can expose an early max before pelvis peak, which may indicate early
 trunk rotation. Stretch-phase max separation is searched from pelvis peak
 through the frame before trunk peak, which checks the expected pelvis-to-trunk
-stretch window. The overlay marks these with `MAX DELIVERY SEP` and
-`MAX STRETCH SEP` labels. These are still 2D camera-view proxies, not true 3D
+stretch window. The overlay marks these with `MAX DIR DELIVERY SEP` and
+`MAX DIR STRETCH SEP` labels. These are still 2D camera-view proxies, not true 3D
 torso-pelvis separation.
 
 Throwing arm metrics are also 2D camera-view proxies based on the throwing-side
 shoulder, elbow, and wrist landmarks. They are useful for visual review of arm
 slot and rough timing, but they should not be interpreted as true shoulder
 external rotation, true layback, elbow torque, or elbow force.
+
+## Metric Definitions / Limitations
+
+Raw line angles are image-coordinate angles from the video frame:
+
+- right = 0 degrees
+- down = 90 degrees
+- up = -90 degrees
+- left = +/-180 degrees
+
+These raw angles are useful for internal calculations and trends, but they are
+not direct biomechanical angles. Forearm vs horizontal is easier to interpret:
+when the forearm is parallel to the ground, it should be close to 0 degrees.
+Forearm vs vertical is also easier to interpret: when the forearm is vertical,
+it should be close to 0 degrees.
+
+The arm slot proxy is still a 2D camera-view proxy, not true 3D arm slot.
+The layback proxy is not true shoulder external rotation.
 
 ## Event Detection
 
@@ -316,6 +343,22 @@ Ball release confidence is included in `timing_report.json`. Low confidence
 means the selected wrist-speed peak may be ambiguous, at the edge of the search
 window, or based on low-visibility wrist landmarks, so the release frame should
 be visually confirmed in `pose_overlay.mp4` or the event review frames.
+
+## Sequence Classification
+
+The analyzer does not assume every pitch has correct mechanics. It detects the
+observed event order and reports a diagnostic sequence classification:
+
+- `pelvis_then_trunk`: pelvis peak clearly occurs before trunk peak.
+- `pelvis_trunk_near_simultaneous`: pelvis and trunk peaks are within 0-2 frames.
+- `trunk_before_pelvis`: trunk appears to peak before pelvis.
+- `peak_before_front_foot_strike`: a rotation peak appears before front foot strike.
+- `unclear`: the sequence could not be classified confidently.
+
+When pelvis and trunk peaks are within 0-2 frames, the app reports them as
+near-simultaneous rather than simply correct. A single-camera 2D video may not
+resolve the true order at that frame-level spacing, so the overlay should be
+reviewed visually.
 
 ## Limitations
 
