@@ -36,6 +36,8 @@ LANDMARK_NAMES = [
     "right_hip",
     "left_ankle",
     "right_ankle",
+    "left_elbow",
+    "right_elbow",
     "left_wrist",
     "right_wrist",
 ]
@@ -59,6 +61,12 @@ OVERLAY_EVENT_SPECS = EVENT_SPECS + [
         "MAX STRETCH SEP",
         (255, 255, 0),
         "max_sep_stretch",
+    ),
+    (
+        "max_layback_proxy_frame",
+        "MAX LAYBACK PROXY",
+        (255, 128, 255),
+        "max_layback_proxy",
     ),
 ]
 
@@ -201,6 +209,22 @@ def line_angle_degrees(x1, y1, x2, y2):
     return math.degrees(math.atan2(y2 - y1, x2 - x1))
 
 
+def joint_angle_degrees(ax, ay, bx, by, cx, cy):
+    """Calculate the angle at point B formed by A-B-C in degrees."""
+    if any(pd.isna(value) for value in [ax, ay, bx, by, cx, cy]):
+        return np.nan
+
+    vector_a = np.array([ax - bx, ay - by], dtype=float)
+    vector_c = np.array([cx - bx, cy - by], dtype=float)
+    norm_product = np.linalg.norm(vector_a) * np.linalg.norm(vector_c)
+    if norm_product == 0:
+        return np.nan
+
+    cosine_angle = np.dot(vector_a, vector_c) / norm_product
+    cosine_angle = np.clip(cosine_angle, -1.0, 1.0)
+    return math.degrees(math.acos(cosine_angle))
+
+
 def unwrap_angle_series_degrees(angle_series):
     """
     Unwrap an angle series so angular velocity does not spike at -180/180 jumps.
@@ -260,6 +284,16 @@ def lead_ankle_name(throwing_hand):
 def throwing_wrist_name(throwing_hand):
     """Return the throwing-side wrist landmark name for the throwing hand."""
     return "right_wrist" if throwing_hand == "right" else "left_wrist"
+
+
+def throwing_shoulder_name(throwing_hand):
+    """Return the throwing-side shoulder landmark name for the throwing hand."""
+    return "right_shoulder" if throwing_hand == "right" else "left_shoulder"
+
+
+def throwing_elbow_name(throwing_hand):
+    """Return the throwing-side elbow landmark name for the throwing hand."""
+    return "right_elbow" if throwing_hand == "right" else "left_elbow"
 
 
 def coordinate_velocity(series, fps):
@@ -372,6 +406,57 @@ def add_throwing_wrist_debug(df, fps, throwing_hand):
     df["throwing_wrist_speed"] = np.sqrt(
         df["throwing_wrist_x_velocity"] ** 2 + df["throwing_wrist_y_velocity"] ** 2
     )
+    return df
+
+
+def add_throwing_arm_metrics(df, throwing_hand):
+    """Add simple 2D throwing arm angle proxy metrics."""
+    df = df.copy()
+    shoulder = throwing_shoulder_name(throwing_hand)
+    elbow = throwing_elbow_name(throwing_hand)
+    wrist = throwing_wrist_name(throwing_hand)
+
+    df["throwing_upper_arm_angle"] = df.apply(
+        lambda row: line_angle_degrees(
+            row[f"{shoulder}_x"],
+            row[f"{shoulder}_y"],
+            row[f"{elbow}_x"],
+            row[f"{elbow}_y"],
+        ),
+        axis=1,
+    )
+    df["throwing_forearm_angle"] = df.apply(
+        lambda row: line_angle_degrees(
+            row[f"{elbow}_x"],
+            row[f"{elbow}_y"],
+            row[f"{wrist}_x"],
+            row[f"{wrist}_y"],
+        ),
+        axis=1,
+    )
+    df["throwing_elbow_angle"] = df.apply(
+        lambda row: joint_angle_degrees(
+            row[f"{shoulder}_x"],
+            row[f"{shoulder}_y"],
+            row[f"{elbow}_x"],
+            row[f"{elbow}_y"],
+            row[f"{wrist}_x"],
+            row[f"{wrist}_y"],
+        ),
+        axis=1,
+    )
+    df["throwing_arm_visibility"] = df[
+        [
+            f"{shoulder}_visibility",
+            f"{elbow}_visibility",
+            f"{wrist}_visibility",
+        ]
+    ].min(axis=1)
+    df["layback_proxy"] = signed_shortest_angle_difference_degrees(
+        df["throwing_forearm_angle"],
+        df["shoulder_angle_smoothed"],
+    )
+    df["layback_proxy_abs"] = df["layback_proxy"].abs()
     return df
 
 
@@ -707,6 +792,78 @@ def max_separation_in_window(df, start_frame, end_frame, fps):
     return max_value, max_abs_value, max_frame, frame_to_time(max_frame, fps)
 
 
+def max_abs_value_in_window(df, column_name, start_frame, end_frame, fps):
+    """Return value, absolute value, frame, and time for max absolute column value."""
+    if start_frame is None or end_frame is None:
+        return None, None, None, None
+
+    search_df = df[(df["frame"] >= start_frame) & (df["frame"] <= end_frame)]
+    search = search_df[["frame", column_name]].dropna()
+    if search.empty:
+        return None, None, None, None
+
+    max_index = search[column_name].abs().idxmax()
+    max_value = float(search.loc[max_index, column_name])
+    max_abs_value = abs(max_value)
+    max_frame = int(search.loc[max_index, "frame"])
+    return max_value, max_abs_value, max_frame, frame_to_time(max_frame, fps)
+
+
+def layback_proxy_window(df, trunk_peak_frame, ball_release_frame, fps):
+    """Return the search window for the simple 2D layback proxy."""
+    if trunk_peak_frame is None:
+        return None, None, True
+
+    search_start_frame = trunk_peak_frame
+    if ball_release_frame is not None:
+        search_end_frame = ball_release_frame
+    else:
+        search_end_frame = trunk_peak_frame + int(math.floor(0.250 * fps))
+
+    max_available_frame = int(df["frame"].max()) if not df.empty else search_end_frame
+    search_end_frame = min(search_end_frame, max_available_frame)
+    if search_end_frame < search_start_frame:
+        search_end_frame = search_start_frame
+
+    frame_count = search_end_frame - search_start_frame + 1
+    return search_start_frame, search_end_frame, frame_count < 2
+
+
+def throwing_arm_quality_warning(
+    visibility_at_ball_release,
+    max_layback_proxy_abs,
+    layback_window_too_short,
+    ball_release_method,
+    ball_release_confidence,
+):
+    """Return quality warnings for 2D throwing arm proxy interpretation."""
+    warnings = []
+
+    if visibility_at_ball_release is not None and visibility_at_ball_release < 0.5:
+        warnings.append("Throwing arm visibility at ball release is below 0.5.")
+
+    if max_layback_proxy_abs is not None and max_layback_proxy_abs > 170.0:
+        warnings.append(
+            "Max 2D layback proxy absolute value is greater than 170 degrees; camera-view angle may be unstable."
+        )
+
+    if layback_window_too_short:
+        warnings.append("2D layback proxy search window has fewer than 2 frames.")
+
+    if (
+        ball_release_method == "auto"
+        and ball_release_confidence is not None
+        and ball_release_confidence < 0.5
+    ):
+        warnings.append(
+            "Ball release was detected automatically with low confidence; confirm arm proxy values visually."
+        )
+
+    if not warnings:
+        return "No major 2D throwing arm quality warning."
+    return " ".join(warnings)
+
+
 def delivery_window(front_foot_strike_frame, trunk_peak_frame):
     """Return the delivery-window search range before trunk peak."""
     if front_foot_strike_frame is None:
@@ -984,6 +1141,8 @@ def extract_landmarks(video_path, fps, start_frame, end_frame):
         "right_hip": pose_landmarks.RIGHT_HIP.value,
         "left_ankle": pose_landmarks.LEFT_ANKLE.value,
         "right_ankle": pose_landmarks.RIGHT_ANKLE.value,
+        "left_elbow": pose_landmarks.LEFT_ELBOW.value,
+        "right_elbow": pose_landmarks.RIGHT_ELBOW.value,
         "left_wrist": pose_landmarks.LEFT_WRIST.value,
         "right_wrist": pose_landmarks.RIGHT_WRIST.value,
     }
@@ -1101,6 +1260,7 @@ def add_calculations(df, fps, smoothing_window, throwing_hand):
 
     df = add_lead_ankle_debug(df, fps, throwing_hand)
     df = add_throwing_wrist_debug(df, fps, throwing_hand)
+    df = add_throwing_arm_metrics(df, throwing_hand)
     return df
 
 
@@ -1212,6 +1372,36 @@ def build_timing_report(
         ball_release_confidence = auto_ball_release["confidence"]
         ball_release_debug_reason = auto_ball_release["reason"]
 
+    (
+        layback_search_start_frame,
+        layback_search_end_frame,
+        layback_window_too_short,
+    ) = layback_proxy_window(df, trunk_peak_frame, ball_release_frame, fps)
+    (
+        max_layback_proxy,
+        max_layback_proxy_abs,
+        max_layback_proxy_frame,
+        max_layback_proxy_time,
+    ) = max_abs_value_in_window(
+        df,
+        "layback_proxy",
+        layback_search_start_frame,
+        layback_search_end_frame,
+        fps,
+    )
+    throwing_arm_visibility_at_ball_release = value_at_frame(
+        df,
+        ball_release_frame,
+        "throwing_arm_visibility",
+    )
+    throwing_arm_warning = throwing_arm_quality_warning(
+        throwing_arm_visibility_at_ball_release,
+        max_layback_proxy_abs,
+        layback_window_too_short,
+        ball_release_method,
+        ball_release_confidence,
+    )
+
     delivery_start_frame, delivery_end_frame = delivery_window(
         front_foot_strike_frame,
         trunk_peak_frame,
@@ -1289,6 +1479,76 @@ def build_timing_report(
         "ball_release_confidence": ball_release_confidence,
         "ball_release_debug_reason": ball_release_debug_reason,
         "ball_release_wrist_speed": ball_release_wrist_speed,
+        "upper_arm_angle_at_trunk_peak": value_at_frame(
+            df,
+            trunk_peak_frame,
+            "throwing_upper_arm_angle",
+        ),
+        "forearm_angle_at_trunk_peak": value_at_frame(
+            df,
+            trunk_peak_frame,
+            "throwing_forearm_angle",
+        ),
+        "elbow_angle_at_trunk_peak": value_at_frame(
+            df,
+            trunk_peak_frame,
+            "throwing_elbow_angle",
+        ),
+        "throwing_arm_visibility_at_trunk_peak": value_at_frame(
+            df,
+            trunk_peak_frame,
+            "throwing_arm_visibility",
+        ),
+        "upper_arm_angle_at_ball_release": value_at_frame(
+            df,
+            ball_release_frame,
+            "throwing_upper_arm_angle",
+        ),
+        "forearm_angle_at_ball_release": value_at_frame(
+            df,
+            ball_release_frame,
+            "throwing_forearm_angle",
+        ),
+        "elbow_angle_at_ball_release": value_at_frame(
+            df,
+            ball_release_frame,
+            "throwing_elbow_angle",
+        ),
+        "throwing_arm_visibility_at_ball_release": (
+            throwing_arm_visibility_at_ball_release
+        ),
+        "arm_slot_angle_at_ball_release": value_at_frame(
+            df,
+            ball_release_frame,
+            "throwing_forearm_angle",
+        ),
+        "layback_proxy_at_trunk_peak": value_at_frame(
+            df,
+            trunk_peak_frame,
+            "layback_proxy",
+        ),
+        "layback_proxy_abs_at_trunk_peak": value_at_frame(
+            df,
+            trunk_peak_frame,
+            "layback_proxy_abs",
+        ),
+        "layback_proxy_at_ball_release": value_at_frame(
+            df,
+            ball_release_frame,
+            "layback_proxy",
+        ),
+        "layback_proxy_abs_at_ball_release": value_at_frame(
+            df,
+            ball_release_frame,
+            "layback_proxy_abs",
+        ),
+        "layback_proxy_search_start_frame": layback_search_start_frame,
+        "layback_proxy_search_end_frame": layback_search_end_frame,
+        "max_layback_proxy_abs": max_layback_proxy_abs,
+        "max_layback_proxy": max_layback_proxy,
+        "max_layback_proxy_frame": max_layback_proxy_frame,
+        "max_layback_proxy_time": max_layback_proxy_time,
+        "throwing_arm_quality_warning": throwing_arm_warning,
         "hip_shoulder_separation_at_ffs": value_at_frame(
             df,
             front_foot_strike_frame,
@@ -1439,6 +1699,22 @@ def write_angles_plot(df, report, output_path):
         linewidth=1.5,
         alpha=0.75,
     )
+    plt.plot(
+        df["frame"],
+        df["throwing_elbow_angle"],
+        label="Throwing elbow angle 2D proxy",
+        linestyle="--",
+        linewidth=1.4,
+        alpha=0.8,
+    )
+    plt.plot(
+        df["frame"],
+        df["layback_proxy_abs"],
+        label="Layback proxy absolute",
+        linestyle=(0, (3, 1, 1, 1)),
+        linewidth=1.4,
+        alpha=0.8,
+    )
 
     pelvis_window_start = report.get("pelvis_peak_search_start_frame")
     pelvis_window_end = report.get("pelvis_peak_search_end_frame")
@@ -1514,6 +1790,13 @@ def format_degrees(value):
     return f"{value:.1f} deg"
 
 
+def format_decimal(value):
+    """Format an optional decimal metric for overlay text."""
+    if value is None or pd.isna(value):
+        return "N/A"
+    return f"{value:.2f}"
+
+
 def draw_angle_metadata(frame_bgr, original_frame, report, angle_by_frame):
     """Draw compact source angle and hip-shoulder separation details."""
     values = angle_by_frame.get(original_frame, {})
@@ -1521,12 +1804,20 @@ def draw_angle_metadata(frame_bgr, original_frame, report, angle_by_frame):
     shoulder_angle = values.get("shoulder_angle_smoothed")
     signed_sep = values.get("hip_shoulder_separation")
     abs_sep = values.get("hip_shoulder_separation_abs")
+    elbow_angle = values.get("throwing_elbow_angle")
+    forearm_angle = values.get("throwing_forearm_angle")
+    layback_proxy = values.get("layback_proxy")
+    arm_visibility = values.get("throwing_arm_visibility")
 
     lines = [
         f"Pelvis angle: {format_degrees(pelvis_angle)}",
         f"Shoulder/trunk angle: {format_degrees(shoulder_angle)}",
         f"Hip-shoulder sep: {format_degrees(signed_sep)}",
         f"Abs sep: {format_degrees(abs_sep)}",
+        f"Elbow angle: {format_degrees(elbow_angle)}",
+        f"Forearm angle: {format_degrees(forearm_angle)}",
+        f"Layback proxy: {format_degrees(layback_proxy)}",
+        f"Arm visibility: {format_decimal(arm_visibility)}",
     ]
 
     ffs_frame = report.get("front_foot_strike_frame")
@@ -1561,9 +1852,26 @@ def draw_angle_metadata(frame_bgr, original_frame, report, angle_by_frame):
             f"Max stretch sep: {max_stretch_abs_sep:.1f} deg @ frame {max_stretch_sep_frame}"
         )
 
+    trunk_peak_frame = report.get("trunk_peak_frame")
+    max_layback_proxy_abs = report.get("max_layback_proxy_abs")
+    max_layback_proxy_frame = report.get("max_layback_proxy_frame")
+    if (
+        trunk_peak_frame is not None
+        and original_frame >= trunk_peak_frame
+        and max_layback_proxy_abs is not None
+        and max_layback_proxy_frame is not None
+    ):
+        lines.append(
+            f"Max layback proxy: {max_layback_proxy_abs:.1f} deg @ frame {max_layback_proxy_frame}"
+        )
+
     warning = report.get("hip_shoulder_separation_quality_warning")
     if warning and warning != "No major 2D separation quality warning.":
         lines.append("2D sep warning: check angle quality")
+
+    arm_warning = report.get("throwing_arm_quality_warning")
+    if arm_warning and arm_warning != "No major 2D throwing arm quality warning.":
+        lines.append("2D arm warning: check angle quality")
 
     y = 125
     for line in lines:
@@ -1605,7 +1913,7 @@ def draw_exact_event_label(frame_bgr, original_frame, report):
 
 def draw_event_labels(frame_bgr, original_frame, report):
     """Draw event labels for 5 frames starting at each event frame."""
-    y = 225
+    y = 390
     for report_key, label, color, _slug in OVERLAY_EVENT_SPECS:
         event_frame = report.get(report_key)
         if event_frame is not None and event_frame <= original_frame < event_frame + 5:
@@ -1649,6 +1957,10 @@ def write_pose_overlay_video(video_path, fps, width, height, start_frame, end_fr
                 "shoulder_angle_smoothed",
                 "hip_shoulder_separation",
                 "hip_shoulder_separation_abs",
+                "throwing_elbow_angle",
+                "throwing_forearm_angle",
+                "layback_proxy",
+                "throwing_arm_visibility",
             ]
         ].to_dict("index")
     )

@@ -259,6 +259,11 @@ stretch window. The overlay marks these with `MAX DELIVERY SEP` and
 `MAX STRETCH SEP` labels. These are still 2D camera-view proxies, not true 3D
 torso-pelvis separation.
 
+Throwing arm metrics are also 2D camera-view proxies based on the throwing-side
+shoulder, elbow, and wrist landmarks. They are useful for visual review of arm
+slot and rough timing, but they should not be interpreted as true shoulder
+external rotation, true layback, elbow torque, or elbow force.
+
 ## Event Detection
 
 Front foot strike is approximated automatically from the lead ankle:
