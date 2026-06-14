@@ -1510,17 +1510,21 @@ def draw_frame_metadata(frame_bgr, original_frame, start_frame, fps):
 def format_degrees(value):
     """Format an optional angle value for overlay text."""
     if value is None or pd.isna(value):
-        return "n/a"
+        return "N/A"
     return f"{value:.1f} deg"
 
 
-def draw_separation_metadata(frame_bgr, original_frame, report, separation_by_frame):
-    """Draw compact hip-shoulder separation details on an overlay frame."""
-    values = separation_by_frame.get(original_frame, {})
+def draw_angle_metadata(frame_bgr, original_frame, report, angle_by_frame):
+    """Draw compact source angle and hip-shoulder separation details."""
+    values = angle_by_frame.get(original_frame, {})
+    pelvis_angle = values.get("hip_angle_smoothed")
+    shoulder_angle = values.get("shoulder_angle_smoothed")
     signed_sep = values.get("hip_shoulder_separation")
     abs_sep = values.get("hip_shoulder_separation_abs")
 
     lines = [
+        f"Pelvis angle: {format_degrees(pelvis_angle)}",
+        f"Shoulder/trunk angle: {format_degrees(shoulder_angle)}",
         f"Hip-shoulder sep: {format_degrees(signed_sep)}",
         f"Abs sep: {format_degrees(abs_sep)}",
     ]
@@ -1544,7 +1548,9 @@ def draw_separation_metadata(frame_bgr, original_frame, report, separation_by_fr
 
     pelvis_peak_frame = report.get("pelvis_peak_frame")
     max_stretch_abs_sep = report.get("max_hip_shoulder_separation_abs_stretch_phase")
-    max_stretch_sep_frame = report.get("max_hip_shoulder_separation_stretch_phase_frame")
+    max_stretch_sep_frame = report.get(
+        "max_hip_shoulder_separation_stretch_phase_frame"
+    )
     if (
         pelvis_peak_frame is not None
         and original_frame >= pelvis_peak_frame
@@ -1636,9 +1642,14 @@ def write_pose_overlay_video(video_path, fps, width, height, start_frame, end_fr
     mp_pose = mp.solutions.pose
     drawing_utils = mp.solutions.drawing_utils
     drawing_styles = mp.solutions.drawing_styles
-    separation_by_frame = (
+    angle_by_frame = (
         df.set_index("frame")[
-            ["hip_shoulder_separation", "hip_shoulder_separation_abs"]
+            [
+                "hip_angle_smoothed",
+                "shoulder_angle_smoothed",
+                "hip_shoulder_separation",
+                "hip_shoulder_separation_abs",
+            ]
         ].to_dict("index")
     )
 
@@ -1671,11 +1682,11 @@ def write_pose_overlay_video(video_path, fps, width, height, start_frame, end_fr
 
             draw_pose_landmarks(frame_bgr, results, mp_pose, drawing_utils, drawing_styles)
             draw_frame_metadata(frame_bgr, original_frame, start_frame, fps)
-            draw_separation_metadata(
+            draw_angle_metadata(
                 frame_bgr,
                 original_frame,
                 report,
-                separation_by_frame,
+                angle_by_frame,
             )
             draw_event_labels(frame_bgr, original_frame, report)
             writer.write(frame_bgr)

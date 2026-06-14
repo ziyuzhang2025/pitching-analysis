@@ -249,13 +249,15 @@ separation values and quality warning in `timing_report.json` should be used
 when interpreting this metric.
 
 The pose overlay video displays signed and absolute 2D hip-shoulder separation
-values on each frame. Delivery-window max separation is searched from front foot
-strike through the frame before trunk peak; this can expose an early max before
-pelvis peak, which may indicate early trunk rotation. Stretch-phase max
-separation is searched from pelvis peak through the frame before trunk peak,
-which checks the expected pelvis-to-trunk stretch window. The overlay marks
-these with `MAX DELIVERY SEP` and `MAX STRETCH SEP` labels. These are still 2D
-camera-view proxies, not true 3D torso-pelvis separation.
+values on each frame. It also displays the 2D pelvis line angle and
+shoulder/trunk line angle used to compute the separation proxy. Delivery-window
+max separation is searched from front foot strike through the frame before trunk
+peak; this can expose an early max before pelvis peak, which may indicate early
+trunk rotation. Stretch-phase max separation is searched from pelvis peak
+through the frame before trunk peak, which checks the expected pelvis-to-trunk
+stretch window. The overlay marks these with `MAX DELIVERY SEP` and
+`MAX STRETCH SEP` labels. These are still 2D camera-view proxies, not true 3D
+torso-pelvis separation.
 
 ## Event Detection
 
