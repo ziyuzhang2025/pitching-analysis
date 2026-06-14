@@ -135,6 +135,20 @@ passing `--front-foot-strike-frame`, then writes:
 
 - `outputs/front_foot_strike_evaluation.csv`
 
+## Ball Release Evaluation
+
+Evaluate automatic ball release detection against the manually labeled release
+frame included in `evaluate_ball_release.py`:
+
+```bash
+python evaluate_ball_release.py
+```
+
+This runs `analyze_pitch_timing.py` automatically without passing
+`--ball-release-frame`, then writes:
+
+- `outputs/ball_release_evaluation.csv`
+
 ## Sample Result
 
 Example terminal output from a filtered report summary:
