@@ -374,14 +374,17 @@ def display_analysis_summary(report):
         st.warning(sep_warning)
 
 
-def build_pitch_report(report: dict) -> list[str]:
+def build_pitch_report(report: dict) -> str:
     """Build a readable local-only coach-style report from timing_report.json."""
     lines = []
     sequence_classification = report.get("sequence_classification")
     sequence_result = report.get("sequence_result") or "Sequence result unavailable."
     sequence_issue = report.get("sequence_issue")
     sequence_note = report.get("sequence_confidence_note")
+    pelvis_trunk_gap_frames = report.get("pelvis_trunk_peak_gap_frames")
     pelvis_trunk_gap_ms = report.get("pelvis_trunk_peak_gap_ms")
+    ffs_to_ball_release_ms = report.get("ffs_to_ball_release_ms")
+    trunk_to_ball_release_ms = report.get("trunk_to_ball_release_ms")
     ball_release_confidence = report.get("ball_release_confidence")
     separation_interpretation = report.get(
         "hip_shoulder_separation_timing_interpretation"
@@ -389,24 +392,26 @@ def build_pitch_report(report: dict) -> list[str]:
     separation_warning = report.get("hip_shoulder_separation_quality_warning")
     arm_warning = report.get("throwing_arm_quality_warning")
 
-    lines.append("Overall summary")
+    lines.append("Overall Summary")
     if sequence_classification == "pelvis_then_trunk":
         lines.append(
-            "- The pelvis-to-trunk sequence appears clear in this 2D video."
+            "- Pelvis peak clearly occurred before trunk peak in this 2D video."
         )
     elif sequence_classification == "pelvis_trunk_near_simultaneous":
         lines.append(
-            "- Pelvis and trunk peaks are very close together. Treat the order as "
-            "low-confidence and confirm it visually."
+            "- Pelvis and trunk peaks are very close together. This may indicate "
+            "limited separation or early trunk rotation, but the order should be "
+            "confirmed visually."
         )
     elif sequence_classification == "trunk_before_pelvis":
         lines.append(
-            "- Trunk rotation appears to peak before pelvis rotation. This may be "
-            "a sequencing issue, but it should be confirmed on the overlay."
+            "- Trunk appears to peak before pelvis. This may indicate early trunk "
+            "rotation or a sequencing issue, but it should be confirmed on the overlay."
         )
     else:
         lines.append(
-            "- The event order is not clear enough for a strong sequence read."
+            "- The event order is not clear enough for a strong sequence read. "
+            "Video angle or landmark quality may be insufficient."
         )
     lines.append(
         "- This report is based on single-camera 2D pose landmarks, so it should "
@@ -416,9 +421,19 @@ def build_pitch_report(report: dict) -> list[str]:
 
     lines.append("Sequence")
     lines.append(f"- Result: {sequence_result}")
+    if pelvis_trunk_gap_frames is not None:
+        lines.append(f"- Pelvis-to-trunk peak gap: {pelvis_trunk_gap_frames} frames.")
     if pelvis_trunk_gap_ms is not None:
         lines.append(
             f"- Pelvis-to-trunk peak gap: {format_value(pelvis_trunk_gap_ms)} ms."
+        )
+    if ffs_to_ball_release_ms is not None:
+        lines.append(
+            f"- Front foot strike to approximate ball release: {format_value(ffs_to_ball_release_ms)} ms."
+        )
+    if trunk_to_ball_release_ms is not None:
+        lines.append(
+            f"- Trunk peak to approximate ball release: {format_value(trunk_to_ball_release_ms)} ms."
         )
     if sequence_issue:
         lines.append(f"- Possible issue: {sequence_issue}")
@@ -426,19 +441,19 @@ def build_pitch_report(report: dict) -> list[str]:
         lines.append(f"- Confidence note: {sequence_note}")
     lines.append("")
 
-    lines.append("Hip-shoulder separation")
+    lines.append("Hip-Shoulder Separation")
     delivery_sep = report.get(
         "max_hip_shoulder_separation_directional_delivery_window"
     )
     stretch_sep = report.get("max_hip_shoulder_separation_directional_stretch_phase")
     if delivery_sep is not None:
         lines.append(
-            "- Max delivery-window 2D directional separation proxy: "
+            "- Max delivery-window pelvis-leading 2D proxy separation: "
             f"{format_value(delivery_sep)} deg."
         )
     if stretch_sep is not None:
         lines.append(
-            "- Max stretch-phase 2D directional separation proxy: "
+            "- Max stretch-phase pelvis-leading 2D proxy separation: "
             f"{format_value(stretch_sep)} deg."
         )
     if separation_interpretation:
@@ -449,32 +464,44 @@ def build_pitch_report(report: dict) -> list[str]:
     )
     lines.append("")
 
-    lines.append("Arm slot / throwing arm")
+    lines.append("Throwing Arm / Arm Slot")
     forearm_vertical = report.get("forearm_angle_vs_vertical_at_ball_release")
+    forearm_horizontal = report.get("forearm_angle_vs_horizontal_at_ball_release")
     arm_slot_vertical = report.get("arm_slot_proxy_vs_vertical_at_ball_release")
+    arm_slot_horizontal = report.get("arm_slot_proxy_vs_horizontal_at_ball_release")
     max_layback_proxy_abs = report.get("max_layback_proxy_abs")
     if forearm_vertical is not None:
         lines.append(
-            "- Forearm angle vs vertical at approximate ball release: "
+            "- Forearm angle vs vertical at approximate ball release, as a 2D proxy: "
             f"{format_value(forearm_vertical)} deg."
+        )
+    if forearm_horizontal is not None:
+        lines.append(
+            "- Forearm angle vs horizontal at approximate ball release, as a 2D proxy: "
+            f"{format_value(forearm_horizontal)} deg."
         )
     if arm_slot_vertical is not None:
         lines.append(
             "- 2D arm slot proxy vs vertical at approximate ball release: "
             f"{format_value(arm_slot_vertical)} deg."
         )
+    if arm_slot_horizontal is not None:
+        lines.append(
+            "- 2D arm slot proxy vs horizontal at approximate ball release: "
+            f"{format_value(arm_slot_horizontal)} deg."
+        )
     if max_layback_proxy_abs is not None:
         lines.append(
-            "- Max 2D layback-related proxy magnitude: "
+            "- Max 2D arm-trunk offset / layback proxy magnitude: "
             f"{format_value(max_layback_proxy_abs)} deg."
         )
     lines.append(
-        "- Arm slot and layback-related values are 2D camera-view proxies. They "
+        "- Arm slot and arm-trunk offset / layback proxy values are 2D camera-view proxies. They "
         "are not true 3D arm slot, true shoulder external rotation, or elbow force."
     )
     lines.append("")
 
-    lines.append("Confidence and warnings")
+    lines.append("Confidence Warnings")
     warnings = []
     if isinstance(ball_release_confidence, (int, float)):
         lines.append(
@@ -495,7 +522,7 @@ def build_pitch_report(report: dict) -> list[str]:
         lines.append("- No major quality warnings were reported.")
     lines.append("")
 
-    lines.append("Suggested focus")
+    lines.append("Suggested Focus")
     focus_items = []
     if sequence_classification == "pelvis_trunk_near_simultaneous":
         focus_items.append(
@@ -515,28 +542,32 @@ def build_pitch_report(report: dict) -> list[str]:
         )
     if isinstance(ball_release_confidence, (int, float)) and ball_release_confidence < 0.5:
         focus_items.append("Manually verify the approximate ball release frame.")
+    if pelvis_trunk_gap_ms is not None:
+        focus_items.append("Compare pelvis-trunk gap across pitches.")
     if separation_warning and separation_warning != "No major 2D separation quality warning.":
         focus_items.append("Use the separation trend cautiously because 2D angle quality may be noisy.")
     if arm_warning and arm_warning != "No major 2D throwing arm quality warning.":
         focus_items.append("Check shoulder, elbow, and wrist landmark visibility on the overlay.")
+    focus_items.append("Use 120-240 fps video for more reliable timing.")
+    focus_items.append("Record from a consistent side or rear-side angle.")
+    focus_items = focus_items[:4]
     for item in focus_items:
         lines.append(f"- {item}")
 
-    return lines
+    return "\n".join(lines)
 
 
-def display_coach_style_report(report, download_key):
+def display_coach_style_report(report, output_prefix, title="Coach-style Report"):
     """Display and offer a download for the coach-style text report."""
-    lines = build_pitch_report(report)
-    report_text = "\n".join(lines)
-    st.markdown("**Coach-style Report**")
+    report_text = build_pitch_report(report)
+    st.markdown(f"**{title}**")
     st.text(report_text)
     st.download_button(
-        "Download report as .txt",
+        "Download pitch report (.txt)",
         data=report_text,
-        file_name=f"{download_key}_coach_report.txt",
+        file_name=f"{output_prefix}_report.txt",
         mime="text/plain",
-        key=f"{download_key}_download_report",
+        key=f"{output_prefix}_{title}_download_report",
     )
 
 
@@ -567,7 +598,11 @@ def display_corrected_analysis(output_prefix):
 
     report = load_json(report_path)
     display_analysis_summary(report)
-    display_coach_style_report(report, f"{output_prefix}_manual")
+    display_coach_style_report(
+        report,
+        output_prefix,
+        title="Manual-corrected Coach-style Report",
+    )
     report_table(
         "Manual-Corrected Timing",
         report,
