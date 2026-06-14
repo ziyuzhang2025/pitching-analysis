@@ -63,10 +63,11 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The Streamlit app calls `analyze_pitch_timing.py` locally with the selected
-inputs and displays the timing report, angle plot, and pose overlay video. It
-also exposes pelvis, trunk, and ball release search window controls so the UI
-can match the trusted terminal workflow.
+The Streamlit app is local-only. It can scan a full video with
+`auto_detect_pitch_windows.py`, run analysis for each detected pitch, and show a
+separate tab for every pitch with the pose overlay video, angles plot, readable
+timing report, and raw JSON. A manual single-window analysis workflow remains
+available in an expander for debugging calibrated clips.
 
 ## Automatic Pitch Window Detection
 
