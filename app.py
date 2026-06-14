@@ -374,6 +374,172 @@ def display_analysis_summary(report):
         st.warning(sep_warning)
 
 
+def build_pitch_report(report: dict) -> list[str]:
+    """Build a readable local-only coach-style report from timing_report.json."""
+    lines = []
+    sequence_classification = report.get("sequence_classification")
+    sequence_result = report.get("sequence_result") or "Sequence result unavailable."
+    sequence_issue = report.get("sequence_issue")
+    sequence_note = report.get("sequence_confidence_note")
+    pelvis_trunk_gap_ms = report.get("pelvis_trunk_peak_gap_ms")
+    ball_release_confidence = report.get("ball_release_confidence")
+    separation_interpretation = report.get(
+        "hip_shoulder_separation_timing_interpretation"
+    )
+    separation_warning = report.get("hip_shoulder_separation_quality_warning")
+    arm_warning = report.get("throwing_arm_quality_warning")
+
+    lines.append("Overall summary")
+    if sequence_classification == "pelvis_then_trunk":
+        lines.append(
+            "- The pelvis-to-trunk sequence appears clear in this 2D video."
+        )
+    elif sequence_classification == "pelvis_trunk_near_simultaneous":
+        lines.append(
+            "- Pelvis and trunk peaks are very close together. Treat the order as "
+            "low-confidence and confirm it visually."
+        )
+    elif sequence_classification == "trunk_before_pelvis":
+        lines.append(
+            "- Trunk rotation appears to peak before pelvis rotation. This may be "
+            "a sequencing issue, but it should be confirmed on the overlay."
+        )
+    else:
+        lines.append(
+            "- The event order is not clear enough for a strong sequence read."
+        )
+    lines.append(
+        "- This report is based on single-camera 2D pose landmarks, so it should "
+        "be used as a review aid rather than a full biomechanics assessment."
+    )
+    lines.append("")
+
+    lines.append("Sequence")
+    lines.append(f"- Result: {sequence_result}")
+    if pelvis_trunk_gap_ms is not None:
+        lines.append(
+            f"- Pelvis-to-trunk peak gap: {format_value(pelvis_trunk_gap_ms)} ms."
+        )
+    if sequence_issue:
+        lines.append(f"- Possible issue: {sequence_issue}")
+    if sequence_note:
+        lines.append(f"- Confidence note: {sequence_note}")
+    lines.append("")
+
+    lines.append("Hip-shoulder separation")
+    delivery_sep = report.get(
+        "max_hip_shoulder_separation_directional_delivery_window"
+    )
+    stretch_sep = report.get("max_hip_shoulder_separation_directional_stretch_phase")
+    if delivery_sep is not None:
+        lines.append(
+            "- Max delivery-window 2D directional separation proxy: "
+            f"{format_value(delivery_sep)} deg."
+        )
+    if stretch_sep is not None:
+        lines.append(
+            "- Max stretch-phase 2D directional separation proxy: "
+            f"{format_value(stretch_sep)} deg."
+        )
+    if separation_interpretation:
+        lines.append(f"- Interpretation: {separation_interpretation}")
+    lines.append(
+        "- Separation is a camera-view 2D proxy from shoulder-line and hip-line "
+        "angles, not true 3D torso-pelvis separation."
+    )
+    lines.append("")
+
+    lines.append("Arm slot / throwing arm")
+    forearm_vertical = report.get("forearm_angle_vs_vertical_at_ball_release")
+    arm_slot_vertical = report.get("arm_slot_proxy_vs_vertical_at_ball_release")
+    max_layback_proxy_abs = report.get("max_layback_proxy_abs")
+    if forearm_vertical is not None:
+        lines.append(
+            "- Forearm angle vs vertical at approximate ball release: "
+            f"{format_value(forearm_vertical)} deg."
+        )
+    if arm_slot_vertical is not None:
+        lines.append(
+            "- 2D arm slot proxy vs vertical at approximate ball release: "
+            f"{format_value(arm_slot_vertical)} deg."
+        )
+    if max_layback_proxy_abs is not None:
+        lines.append(
+            "- Max 2D layback-related proxy magnitude: "
+            f"{format_value(max_layback_proxy_abs)} deg."
+        )
+    lines.append(
+        "- Arm slot and layback-related values are 2D camera-view proxies. They "
+        "are not true 3D arm slot, true shoulder external rotation, or elbow force."
+    )
+    lines.append("")
+
+    lines.append("Confidence and warnings")
+    warnings = []
+    if isinstance(ball_release_confidence, (int, float)):
+        lines.append(
+            f"- Ball release confidence: {format_value(ball_release_confidence)}."
+        )
+        if ball_release_confidence < 0.5:
+            warnings.append(
+                "Ball release confidence is low; confirm the release frame visually."
+            )
+    if separation_warning and separation_warning != "No major 2D separation quality warning.":
+        warnings.append(separation_warning)
+    if arm_warning and arm_warning != "No major 2D throwing arm quality warning.":
+        warnings.append(arm_warning)
+    if warnings:
+        for warning in warnings:
+            lines.append(f"- Warning: {warning}")
+    else:
+        lines.append("- No major quality warnings were reported.")
+    lines.append("")
+
+    lines.append("Suggested focus")
+    focus_items = []
+    if sequence_classification == "pelvis_trunk_near_simultaneous":
+        focus_items.append(
+            "Review whether trunk rotation is starting too close to pelvis peak."
+        )
+    elif sequence_classification == "trunk_before_pelvis":
+        focus_items.append(
+            "Review sequencing and whether the trunk is opening early."
+        )
+    elif sequence_classification == "pelvis_then_trunk":
+        focus_items.append(
+            "Use the overlay to confirm that the clear pelvis-to-trunk order matches the visual delivery."
+        )
+    else:
+        focus_items.append(
+            "Confirm key event frames manually before drawing conclusions."
+        )
+    if isinstance(ball_release_confidence, (int, float)) and ball_release_confidence < 0.5:
+        focus_items.append("Manually verify the approximate ball release frame.")
+    if separation_warning and separation_warning != "No major 2D separation quality warning.":
+        focus_items.append("Use the separation trend cautiously because 2D angle quality may be noisy.")
+    if arm_warning and arm_warning != "No major 2D throwing arm quality warning.":
+        focus_items.append("Check shoulder, elbow, and wrist landmark visibility on the overlay.")
+    for item in focus_items:
+        lines.append(f"- {item}")
+
+    return lines
+
+
+def display_coach_style_report(report, download_key):
+    """Display and offer a download for the coach-style text report."""
+    lines = build_pitch_report(report)
+    report_text = "\n".join(lines)
+    st.markdown("**Coach-style Report**")
+    st.text(report_text)
+    st.download_button(
+        "Download report as .txt",
+        data=report_text,
+        file_name=f"{download_key}_coach_report.txt",
+        mime="text/plain",
+        key=f"{download_key}_download_report",
+    )
+
+
 def display_corrected_analysis(output_prefix):
     """Display outputs from a manual-corrected pitch analysis."""
     report_path = output_path(output_prefix, "timing_report.json")
@@ -401,6 +567,7 @@ def display_corrected_analysis(output_prefix):
 
     report = load_json(report_path)
     display_analysis_summary(report)
+    display_coach_style_report(report, f"{output_prefix}_manual")
     report_table(
         "Manual-Corrected Timing",
         report,
@@ -577,6 +744,8 @@ def display_pitch_tab(prefix, window, video_path, throwing_hand):
         report_table("Hip-Shoulder Separation", report, separation_fields)
     with report_columns[2]:
         report_table("Throwing Arm", report, arm_fields)
+
+    display_coach_style_report(report, pitch_prefix)
 
     with st.expander("Raw timing report JSON"):
         st.json(report)
