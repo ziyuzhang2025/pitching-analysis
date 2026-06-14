@@ -25,7 +25,7 @@ Everything runs on your local machine. There is no cloud API and no API key.
 - Front foot strike confidence and debug signals
 - Pelvis/trunk peak search windows
 - Approximate ball release from throwing wrist speed
-- Pose overlay video
+- Pose overlay video with event and 2D separation annotations
 - Event review frames
 - Multi-report summary CSV
 
@@ -52,6 +52,20 @@ Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
+
+## Streamlit UI
+
+Run the local browser-based UI:
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+The Streamlit app calls `analyze_pitch_timing.py` locally with the selected
+inputs and displays the timing report, angle plot, and pose overlay video. It
+also exposes pelvis, trunk, and ball release search window controls so the UI
+can match the trusted terminal workflow.
 
 ## Example Workflow
 
@@ -222,9 +236,26 @@ The script also calculates:
 - throwing wrist x velocity
 - throwing wrist y velocity
 - throwing wrist speed
+- hip-shoulder separation 2D proxy
 
 Angle unwrapping helps avoid artificial jumps when angles cross the -180/180
 degree boundary.
+
+Hip-shoulder separation is reported as a signed shortest-angle 2D proxy in
+degrees, limited to approximately -180 to +180. It is the camera-view 2D angle
+difference between the shoulder line and hip line, not true 3D torso-pelvis
+separation. The signed value can flip near +/-180 degrees, so the absolute
+separation values and quality warning in `timing_report.json` should be used
+when interpreting this metric.
+
+The pose overlay video displays signed and absolute 2D hip-shoulder separation
+values on each frame. Delivery-window max separation is searched from front foot
+strike through the frame before trunk peak; this can expose an early max before
+pelvis peak, which may indicate early trunk rotation. Stretch-phase max
+separation is searched from pelvis peak through the frame before trunk peak,
+which checks the expected pelvis-to-trunk stretch window. The overlay marks
+these with `MAX DELIVERY SEP` and `MAX STRETCH SEP` labels. These are still 2D
+camera-view proxies, not true 3D torso-pelvis separation.
 
 ## Event Detection
 

@@ -47,6 +47,21 @@ EVENT_SPECS = [
     ("ball_release_frame", "BALL RELEASE", (255, 0, 255), "ball_release"),
 ]
 
+OVERLAY_EVENT_SPECS = EVENT_SPECS + [
+    (
+        "max_hip_shoulder_separation_delivery_window_frame",
+        "MAX DELIVERY SEP",
+        (255, 255, 0),
+        "max_delivery_sep",
+    ),
+    (
+        "max_hip_shoulder_separation_stretch_phase_frame",
+        "MAX STRETCH SEP",
+        (255, 255, 0),
+        "max_sep_stretch",
+    ),
+]
+
 
 def parse_args():
     """Parse command-line arguments."""
@@ -223,6 +238,11 @@ def angular_velocity_degrees_per_second(angle_degrees, fps):
     # np.gradient gives a simple central-difference style derivative.
     velocity = np.gradient(angle_degrees.to_numpy()) * fps
     return pd.Series(velocity, index=angle_degrees.index)
+
+
+def signed_shortest_angle_difference_degrees(angle_a, angle_b):
+    """Return signed shortest difference angle_a - angle_b in degrees."""
+    return (angle_a - angle_b + 180.0) % 360.0 - 180.0
 
 
 def clamp(value, low=0.0, high=1.0):
@@ -670,6 +690,135 @@ def value_at_frame(df, frame_number, column_name):
     return float(value)
 
 
+def max_separation_in_window(df, start_frame, end_frame, fps):
+    """Return largest absolute hip-shoulder separation in a frame window."""
+    if start_frame is None or end_frame is None:
+        return None, None, None, None
+
+    search_df = df[(df["frame"] >= start_frame) & (df["frame"] <= end_frame)]
+    search = search_df[["frame", "hip_shoulder_separation"]].dropna()
+    if search.empty:
+        return None, None, None, None
+
+    max_index = search["hip_shoulder_separation"].abs().idxmax()
+    max_value = float(search.loc[max_index, "hip_shoulder_separation"])
+    max_abs_value = abs(max_value)
+    max_frame = int(search.loc[max_index, "frame"])
+    return max_value, max_abs_value, max_frame, frame_to_time(max_frame, fps)
+
+
+def delivery_window(front_foot_strike_frame, trunk_peak_frame):
+    """Return the delivery-window search range before trunk peak."""
+    if front_foot_strike_frame is None:
+        return None, None
+
+    if trunk_peak_frame is None:
+        return front_foot_strike_frame, front_foot_strike_frame
+
+    delivery_start_frame = front_foot_strike_frame
+    delivery_end_frame = trunk_peak_frame - 1
+    if delivery_end_frame < delivery_start_frame:
+        delivery_end_frame = delivery_start_frame
+
+    return delivery_start_frame, delivery_end_frame
+
+
+def stretch_phase_window(pelvis_peak_frame, trunk_peak_frame):
+    """Return the stretch-phase search window and whether it is very short."""
+    if pelvis_peak_frame is None:
+        return None, None, True
+
+    if trunk_peak_frame is None:
+        return pelvis_peak_frame, pelvis_peak_frame, True
+
+    stretch_start_frame = pelvis_peak_frame
+    stretch_end_frame = trunk_peak_frame - 1
+    if stretch_end_frame < stretch_start_frame:
+        stretch_end_frame = stretch_start_frame
+
+    stretch_frame_count = stretch_end_frame - stretch_start_frame + 1
+    return stretch_start_frame, stretch_end_frame, stretch_frame_count < 2
+
+
+def separation_timing_category(max_frame, pelvis_peak_frame, trunk_peak_frame):
+    """Classify when the delivery-window separation max occurred."""
+    if max_frame is None or pelvis_peak_frame is None or trunk_peak_frame is None:
+        return "unknown"
+
+    if max_frame < pelvis_peak_frame:
+        return "before_pelvis_peak_possible_early_trunk_rotation"
+
+    if pelvis_peak_frame <= max_frame < trunk_peak_frame:
+        return "between_pelvis_peak_and_trunk_peak"
+
+    return "invalid_at_or_after_trunk_peak"
+
+
+def separation_timing_interpretation(timing_category):
+    """Return plain-English interpretation for separation max timing."""
+    if timing_category == "before_pelvis_peak_possible_early_trunk_rotation":
+        return (
+            "Max 2D separation occurred before pelvis peak. This may indicate "
+            "early trunk rotation or sequencing issue, but confirm visually "
+            "because this is a 2D proxy."
+        )
+
+    if timing_category == "between_pelvis_peak_and_trunk_peak":
+        return (
+            "Max 2D separation occurred during the expected pelvis-to-trunk "
+            "stretch phase."
+        )
+
+    if timing_category == "invalid_at_or_after_trunk_peak":
+        return (
+            "Max separation occurred at or after trunk peak and should not be "
+            "interpreted as reliable."
+        )
+
+    return "Max 2D separation timing could not be categorized."
+
+
+def separation_quality_warning(
+    df,
+    start_frame,
+    end_frame,
+    max_abs_separation,
+    stretch_window_too_short=False,
+    timing_category=None,
+):
+    """Return quality warnings for 2D hip-shoulder separation interpretation."""
+    warnings = []
+
+    if stretch_window_too_short:
+        warnings.append(
+            "Stretch-phase 2D separation window has fewer than 2 frames."
+        )
+
+    if max_abs_separation is not None and max_abs_separation > 150.0:
+        warnings.append(
+            "Max delivery-window absolute 2D separation is greater than 150 degrees; values near +/-180 can be unstable."
+        )
+
+    if start_frame is not None and end_frame is not None:
+        search_df = df[(df["frame"] >= start_frame) & (df["frame"] <= end_frame)]
+        separation = search_df["hip_shoulder_separation"].dropna()
+        if len(separation) >= 2:
+            max_adjacent_change = float(separation.diff().abs().max())
+            if max_adjacent_change > 90.0:
+                warnings.append(
+                    "Signed 2D separation changes by more than 90 degrees between adjacent frames inside the delivery window."
+                )
+
+    if timing_category == "before_pelvis_peak_possible_early_trunk_rotation":
+        warnings.append(
+            "Max delivery-window 2D separation occurred before pelvis peak; possible early trunk rotation."
+        )
+
+    if not warnings:
+        return "No major 2D separation quality warning."
+    return " ".join(warnings)
+
+
 def ball_release_confidence_from_peak(
     df,
     throwing_hand,
@@ -937,6 +1086,11 @@ def add_calculations(df, fps, smoothing_window, throwing_hand):
         df["shoulder_angle_unwrapped"], smoothing_window
     )
     df["hip_angle_smoothed"] = smooth_series(df["hip_angle_unwrapped"], smoothing_window)
+    df["hip_shoulder_separation"] = signed_shortest_angle_difference_degrees(
+        df["shoulder_angle_smoothed"],
+        df["hip_angle_smoothed"],
+    )
+    df["hip_shoulder_separation_abs"] = df["hip_shoulder_separation"].abs()
 
     df["shoulder_angular_velocity"] = angular_velocity_degrees_per_second(
         df["shoulder_angle_smoothed"], fps
@@ -1058,6 +1212,56 @@ def build_timing_report(
         ball_release_confidence = auto_ball_release["confidence"]
         ball_release_debug_reason = auto_ball_release["reason"]
 
+    delivery_start_frame, delivery_end_frame = delivery_window(
+        front_foot_strike_frame,
+        trunk_peak_frame,
+    )
+    (
+        max_hip_shoulder_separation_delivery_window,
+        max_hip_shoulder_separation_abs_delivery_window,
+        max_hip_shoulder_separation_delivery_window_frame,
+        max_hip_shoulder_separation_delivery_window_time,
+    ) = max_separation_in_window(
+        df,
+        delivery_start_frame,
+        delivery_end_frame,
+        fps,
+    )
+    (
+        stretch_start_frame,
+        stretch_end_frame,
+        stretch_window_too_short,
+    ) = stretch_phase_window(pelvis_peak_frame, trunk_peak_frame)
+    (
+        max_hip_shoulder_separation_stretch_phase,
+        max_hip_shoulder_separation_abs_stretch_phase,
+        max_hip_shoulder_separation_stretch_phase_frame,
+        max_hip_shoulder_separation_stretch_phase_time,
+    ) = max_separation_in_window(
+        df,
+        stretch_start_frame,
+        stretch_end_frame,
+        fps,
+    )
+    max_hip_shoulder_separation_timing_category = separation_timing_category(
+        max_hip_shoulder_separation_delivery_window_frame,
+        pelvis_peak_frame,
+        trunk_peak_frame,
+    )
+    hip_shoulder_separation_timing_interpretation = (
+        separation_timing_interpretation(
+            max_hip_shoulder_separation_timing_category
+        )
+    )
+    hip_shoulder_separation_quality_warning = separation_quality_warning(
+        df,
+        delivery_start_frame,
+        delivery_end_frame,
+        max_hip_shoulder_separation_abs_delivery_window,
+        stretch_window_too_short,
+        max_hip_shoulder_separation_timing_category,
+    )
+
     return {
         "fps": fps,
         "original_total_frames": int(original_total_frames),
@@ -1085,6 +1289,103 @@ def build_timing_report(
         "ball_release_confidence": ball_release_confidence,
         "ball_release_debug_reason": ball_release_debug_reason,
         "ball_release_wrist_speed": ball_release_wrist_speed,
+        "hip_shoulder_separation_at_ffs": value_at_frame(
+            df,
+            front_foot_strike_frame,
+            "hip_shoulder_separation",
+        ),
+        "hip_shoulder_separation_at_pelvis_peak": value_at_frame(
+            df,
+            pelvis_peak_frame,
+            "hip_shoulder_separation",
+        ),
+        "hip_shoulder_separation_at_trunk_peak": value_at_frame(
+            df,
+            trunk_peak_frame,
+            "hip_shoulder_separation",
+        ),
+        "hip_shoulder_separation_at_ball_release": value_at_frame(
+            df,
+            ball_release_frame,
+            "hip_shoulder_separation",
+        ),
+        "hip_shoulder_separation_abs_at_ffs": value_at_frame(
+            df,
+            front_foot_strike_frame,
+            "hip_shoulder_separation_abs",
+        ),
+        "hip_shoulder_separation_abs_at_pelvis_peak": value_at_frame(
+            df,
+            pelvis_peak_frame,
+            "hip_shoulder_separation_abs",
+        ),
+        "hip_shoulder_separation_abs_at_trunk_peak": value_at_frame(
+            df,
+            trunk_peak_frame,
+            "hip_shoulder_separation_abs",
+        ),
+        "hip_shoulder_separation_abs_at_ball_release": value_at_frame(
+            df,
+            ball_release_frame,
+            "hip_shoulder_separation_abs",
+        ),
+        "hip_shoulder_separation_delivery_window_start_frame": delivery_start_frame,
+        "hip_shoulder_separation_delivery_window_end_frame": delivery_end_frame,
+        "max_hip_shoulder_separation_delivery_window": (
+            max_hip_shoulder_separation_delivery_window
+        ),
+        "max_hip_shoulder_separation_abs_delivery_window": (
+            max_hip_shoulder_separation_abs_delivery_window
+        ),
+        "max_hip_shoulder_separation_delivery_window_frame": (
+            max_hip_shoulder_separation_delivery_window_frame
+        ),
+        "max_hip_shoulder_separation_delivery_window_time": (
+            max_hip_shoulder_separation_delivery_window_time
+        ),
+        "hip_shoulder_separation_stretch_phase_start_frame": stretch_start_frame,
+        "hip_shoulder_separation_stretch_phase_end_frame": stretch_end_frame,
+        "max_hip_shoulder_separation_stretch_phase": (
+            max_hip_shoulder_separation_stretch_phase
+        ),
+        "max_hip_shoulder_separation_abs_stretch_phase": (
+            max_hip_shoulder_separation_abs_stretch_phase
+        ),
+        "max_hip_shoulder_separation_stretch_phase_frame": (
+            max_hip_shoulder_separation_stretch_phase_frame
+        ),
+        "max_hip_shoulder_separation_stretch_phase_time": (
+            max_hip_shoulder_separation_stretch_phase_time
+        ),
+        "max_hip_shoulder_separation_before_trunk_peak": (
+            max_hip_shoulder_separation_stretch_phase
+        ),
+        "max_hip_shoulder_separation_abs_before_trunk_peak": (
+            max_hip_shoulder_separation_abs_stretch_phase
+        ),
+        "max_hip_shoulder_separation_before_trunk_peak_frame": (
+            max_hip_shoulder_separation_stretch_phase_frame
+        ),
+        "max_hip_shoulder_separation_before_trunk_peak_time": (
+            max_hip_shoulder_separation_stretch_phase_time
+        ),
+        "max_hip_shoulder_separation": max_hip_shoulder_separation_stretch_phase,
+        "max_hip_shoulder_separation_abs": (
+            max_hip_shoulder_separation_abs_stretch_phase
+        ),
+        "max_hip_shoulder_separation_frame": (
+            max_hip_shoulder_separation_stretch_phase_frame
+        ),
+        "max_hip_shoulder_separation_time": (
+            max_hip_shoulder_separation_stretch_phase_time
+        ),
+        "max_hip_shoulder_separation_timing_category": (
+            max_hip_shoulder_separation_timing_category
+        ),
+        "hip_shoulder_separation_timing_interpretation": (
+            hip_shoulder_separation_timing_interpretation
+        ),
+        "hip_shoulder_separation_quality_warning": hip_shoulder_separation_quality_warning,
         "front_foot_strike_detection_method": front_foot_method,
         "pelvis_peak_detection_method": pelvis_method,
         "trunk_peak_detection_method": trunk_method,
@@ -1123,6 +1424,21 @@ def write_angles_plot(df, report, output_path):
     plt.figure(figsize=(12, 6))
     plt.plot(df["frame"], df["hip_angle_smoothed"], label="Hip angle")
     plt.plot(df["frame"], df["shoulder_angle_smoothed"], label="Shoulder angle")
+    plt.plot(
+        df["frame"],
+        df["hip_shoulder_separation"],
+        label="Hip-shoulder separation 2D proxy (signed)",
+        linestyle=":",
+        linewidth=2,
+    )
+    plt.plot(
+        df["frame"],
+        df["hip_shoulder_separation_abs"],
+        label="Hip-shoulder separation 2D proxy (absolute)",
+        linestyle="-.",
+        linewidth=1.5,
+        alpha=0.75,
+    )
 
     pelvis_window_start = report.get("pelvis_peak_search_start_frame")
     pelvis_window_end = report.get("pelvis_peak_search_end_frame")
@@ -1191,6 +1507,73 @@ def draw_frame_metadata(frame_bgr, original_frame, start_frame, fps):
         y += 30
 
 
+def format_degrees(value):
+    """Format an optional angle value for overlay text."""
+    if value is None or pd.isna(value):
+        return "n/a"
+    return f"{value:.1f} deg"
+
+
+def draw_separation_metadata(frame_bgr, original_frame, report, separation_by_frame):
+    """Draw compact hip-shoulder separation details on an overlay frame."""
+    values = separation_by_frame.get(original_frame, {})
+    signed_sep = values.get("hip_shoulder_separation")
+    abs_sep = values.get("hip_shoulder_separation_abs")
+
+    lines = [
+        f"Hip-shoulder sep: {format_degrees(signed_sep)}",
+        f"Abs sep: {format_degrees(abs_sep)}",
+    ]
+
+    ffs_frame = report.get("front_foot_strike_frame")
+    max_delivery_abs_sep = report.get(
+        "max_hip_shoulder_separation_abs_delivery_window"
+    )
+    max_delivery_sep_frame = report.get(
+        "max_hip_shoulder_separation_delivery_window_frame"
+    )
+    if (
+        ffs_frame is not None
+        and original_frame >= ffs_frame
+        and max_delivery_abs_sep is not None
+        and max_delivery_sep_frame is not None
+    ):
+        lines.append(
+            f"Max delivery sep: {max_delivery_abs_sep:.1f} deg @ frame {max_delivery_sep_frame}"
+        )
+
+    pelvis_peak_frame = report.get("pelvis_peak_frame")
+    max_stretch_abs_sep = report.get("max_hip_shoulder_separation_abs_stretch_phase")
+    max_stretch_sep_frame = report.get("max_hip_shoulder_separation_stretch_phase_frame")
+    if (
+        pelvis_peak_frame is not None
+        and original_frame >= pelvis_peak_frame
+        and max_stretch_abs_sep is not None
+        and max_stretch_sep_frame is not None
+    ):
+        lines.append(
+            f"Max stretch sep: {max_stretch_abs_sep:.1f} deg @ frame {max_stretch_sep_frame}"
+        )
+
+    warning = report.get("hip_shoulder_separation_quality_warning")
+    if warning and warning != "No major 2D separation quality warning.":
+        lines.append("2D sep warning: check angle quality")
+
+    y = 125
+    for line in lines:
+        cv2.putText(
+            frame_bgr,
+            line,
+            (20, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        y += 25
+
+
 def draw_exact_event_label(frame_bgr, original_frame, report):
     """Draw an event label only on the exact selected event frame."""
     y = 125
@@ -1216,8 +1599,8 @@ def draw_exact_event_label(frame_bgr, original_frame, report):
 
 def draw_event_labels(frame_bgr, original_frame, report):
     """Draw event labels for 5 frames starting at each event frame."""
-    y = 95
-    for report_key, label, color, _slug in EVENT_SPECS:
+    y = 225
+    for report_key, label, color, _slug in OVERLAY_EVENT_SPECS:
         event_frame = report.get(report_key)
         if event_frame is not None and event_frame <= original_frame < event_frame + 5:
             if report_key == "front_foot_strike_frame":
@@ -1248,11 +1631,16 @@ def draw_pose_landmarks(frame_bgr, results, mp_pose, drawing_utils, drawing_styl
         )
 
 
-def write_pose_overlay_video(video_path, fps, width, height, start_frame, end_frame, report, output_path):
-    """Create an MP4 with MediaPipe skeleton, frame/time text, and event labels."""
+def write_pose_overlay_video(video_path, fps, width, height, start_frame, end_frame, report, df, output_path):
+    """Create an MP4 with MediaPipe skeleton, frame/time text, metrics, and event labels."""
     mp_pose = mp.solutions.pose
     drawing_utils = mp.solutions.drawing_utils
     drawing_styles = mp.solutions.drawing_styles
+    separation_by_frame = (
+        df.set_index("frame")[
+            ["hip_shoulder_separation", "hip_shoulder_separation_abs"]
+        ].to_dict("index")
+    )
 
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -1283,6 +1671,12 @@ def write_pose_overlay_video(video_path, fps, width, height, start_frame, end_fr
 
             draw_pose_landmarks(frame_bgr, results, mp_pose, drawing_utils, drawing_styles)
             draw_frame_metadata(frame_bgr, original_frame, start_frame, fps)
+            draw_separation_metadata(
+                frame_bgr,
+                original_frame,
+                report,
+                separation_by_frame,
+            )
             draw_event_labels(frame_bgr, original_frame, report)
             writer.write(frame_bgr)
 
@@ -1477,6 +1871,7 @@ def main():
         start_frame,
         end_frame,
         report,
+        df,
         overlay_path,
     )
 
