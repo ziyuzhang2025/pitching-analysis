@@ -1225,14 +1225,32 @@ def detected_sequence_order(
     pelvis_peak_frame,
     trunk_peak_frame,
     ball_release_frame,
+    pelvis_trunk_peak_gap_frames=None,
+    near_simultaneous_threshold_frames=2,
 ):
-    """Return a compact event-order string, grouping same-frame events."""
-    events = [
-        ("front_foot_strike", front_foot_strike_frame),
-        ("pelvis_peak", pelvis_peak_frame),
-        ("trunk_peak", trunk_peak_frame),
-        ("ball_release", ball_release_frame),
-    ]
+    """Return a compact event-order string, grouping near-simultaneous peaks."""
+    pelvis_trunk_near_simultaneous = (
+        pelvis_trunk_peak_gap_frames is not None
+        and abs(pelvis_trunk_peak_gap_frames) <= near_simultaneous_threshold_frames
+    )
+
+    events = [("front_foot_strike", front_foot_strike_frame)]
+    if pelvis_trunk_near_simultaneous and pelvis_peak_frame is not None and trunk_peak_frame is not None:
+        events.append(
+            (
+                "pelvis_peak/trunk_peak",
+                min(pelvis_peak_frame, trunk_peak_frame),
+            )
+        )
+    else:
+        events.extend(
+            [
+                ("pelvis_peak", pelvis_peak_frame),
+                ("trunk_peak", trunk_peak_frame),
+            ]
+        )
+    events.append(("ball_release", ball_release_frame))
+
     events = [(name, frame) for name, frame in events if frame is not None]
     if not events:
         return None
@@ -1268,6 +1286,8 @@ def classify_sequence(
         pelvis_peak_frame,
         trunk_peak_frame,
         ball_release_frame,
+        pelvis_trunk_gap_frames,
+        near_simultaneous_threshold_frames,
     )
 
     result = {
@@ -1298,16 +1318,17 @@ def classify_sequence(
         front_foot_strike_frame is not None
         and pelvis_peak_frame is not None
         and trunk_peak_frame is not None
-        and front_foot_strike_frame < pelvis_peak_frame <= trunk_peak_frame
+        and front_foot_strike_frame < pelvis_peak_frame
+        and front_foot_strike_frame < trunk_peak_frame
         and pelvis_trunk_gap_frames is not None
-        and 0 <= pelvis_trunk_gap_frames <= near_simultaneous_threshold_frames
+        and abs(pelvis_trunk_gap_frames) <= near_simultaneous_threshold_frames
     ):
         result.update(
             {
                 "sequence_classification": "pelvis_trunk_near_simultaneous",
                 "sequence_result": "Pelvis and trunk peaks occur nearly simultaneously.",
                 "sequence_issue": "Possible limited hip-shoulder separation or early trunk rotation; confirm visually.",
-                "sequence_confidence_note": "Pelvis and trunk peaks are within 2 frames, so single-camera 2D video may not reliably separate their true order.",
+                "sequence_confidence_note": "Pelvis and trunk peaks are within +/-2 frames, so single-camera 2D video may not reliably separate their true order.",
             }
         )
         return result
@@ -1317,6 +1338,8 @@ def classify_sequence(
         and pelvis_peak_frame is not None
         and trunk_peak_frame is not None
         and front_foot_strike_frame < trunk_peak_frame < pelvis_peak_frame
+        and pelvis_trunk_gap_frames is not None
+        and pelvis_trunk_gap_frames < -near_simultaneous_threshold_frames
     ):
         result.update(
             {
@@ -1331,8 +1354,8 @@ def classify_sequence(
     if (
         front_foot_strike_frame is not None
         and (
-            (pelvis_peak_frame is not None and front_foot_strike_frame > pelvis_peak_frame)
-            or (trunk_peak_frame is not None and front_foot_strike_frame > trunk_peak_frame)
+            (pelvis_peak_frame is not None and pelvis_peak_frame <= front_foot_strike_frame)
+            or (trunk_peak_frame is not None and trunk_peak_frame <= front_foot_strike_frame)
         )
     ):
         result.update(

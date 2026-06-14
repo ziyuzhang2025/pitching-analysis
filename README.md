@@ -25,6 +25,7 @@ Everything runs on your local machine. There is no cloud API and no API key.
 - Front foot strike confidence and debug signals
 - Pelvis/trunk peak search windows
 - Approximate ball release from throwing wrist speed
+- Automatic pitch window detection
 - Pose overlay video with event and 2D separation annotations
 - Event review frames
 - Multi-report summary CSV
@@ -66,6 +67,30 @@ The Streamlit app calls `analyze_pitch_timing.py` locally with the selected
 inputs and displays the timing report, angle plot, and pose overlay video. It
 also exposes pelvis, trunk, and ball release search window controls so the UI
 can match the trusted terminal workflow.
+
+## Automatic Pitch Window Detection
+
+Use `auto_detect_pitch_windows.py` to scan a full local video and suggest likely
+pitch windows before running detailed timing analysis:
+
+```bash
+python auto_detect_pitch_windows.py videos/test_pitch.MP4 --throwing-hand right --output-prefix test_pitch_auto --max-windows 1
+```
+
+This writes:
+
+- `outputs/test_pitch_auto_pitch_windows.json`
+
+The detector is an MVP heuristic based on throwing wrist speed, pelvis/trunk
+rotation activity, and MediaPipe pose landmark visibility. A second-stage
+validation filter scores each candidate with a simple pitch-likeness score so
+general movement is less likely to be selected as a pitch. It does not train a
+model and does not use any cloud service. Use `--run-analysis` to automatically
+call `analyze_pitch_timing.py` for each detected window.
+
+Automatic pitch window detection is still heuristic and may produce false
+positives. It works best when the video contains clear full pitching motions,
+good pose visibility, and limited unrelated movement.
 
 ## Example Workflow
 
@@ -110,6 +135,12 @@ This writes:
 - `outputs/pitch_summary_filtered.csv`
 
 ## Example Commands
+
+Automatically suggest a likely pitch window:
+
+```bash
+python auto_detect_pitch_windows.py videos/test_pitch.MP4 --throwing-hand right --output-prefix test_pitch_auto --max-windows 1
+```
 
 Generate a check overlay:
 
@@ -350,15 +381,15 @@ The analyzer does not assume every pitch has correct mechanics. It detects the
 observed event order and reports a diagnostic sequence classification:
 
 - `pelvis_then_trunk`: pelvis peak clearly occurs before trunk peak.
-- `pelvis_trunk_near_simultaneous`: pelvis and trunk peaks are within 0-2 frames.
-- `trunk_before_pelvis`: trunk appears to peak before pelvis.
+- `pelvis_trunk_near_simultaneous`: pelvis and trunk peaks are within +/-2 frames.
+- `trunk_before_pelvis`: trunk appears to peak before pelvis by more than 2 frames.
 - `peak_before_front_foot_strike`: a rotation peak appears before front foot strike.
 - `unclear`: the sequence could not be classified confidently.
 
-When pelvis and trunk peaks are within 0-2 frames, the app reports them as
-near-simultaneous rather than simply correct. A single-camera 2D video may not
-resolve the true order at that frame-level spacing, so the overlay should be
-reviewed visually.
+When pelvis and trunk peaks are within +/-2 frames, the app reports them as
+near-simultaneous rather than simply correct or clear trunk-before-pelvis. A
+single-camera 2D video may not resolve the true order at that frame-level
+spacing, so the overlay should be reviewed visually.
 
 ## Limitations
 
