@@ -152,6 +152,8 @@ def build_auto_detect_command(
         str(max_pitches),
         "--min-pitch-likeness",
         str(min_pitch_likeness),
+        "--group-gap-seconds",
+        "2.5",
         "--debug-candidates",
         "--run-analysis",
     ]
@@ -331,19 +333,19 @@ def display_auto_detection_summary(prefix, min_pitch_likeness, max_pitches):
                     "window_id": window.get("window_id"),
                     "start_time": format_value(window.get("start_time")),
                     "end_time": format_value(window.get("end_time")),
-                    "candidate_peak_time": format_value(
-                        window.get("candidate_peak_time")
+                    "estimated_ffs_time": format_value(
+                        window.get("estimated_ffs_time")
                     ),
-                    "confidence": window.get("confidence", "N/A"),
+                    "estimated_release_time": format_value(
+                        window.get("estimated_release_time")
+                    ),
                     "pitch_likeness_score": format_value(
                         window.get("pitch_likeness_score")
                     ),
-                    "activity_score": format_value(window.get("activity_score")),
-                    "mean_visibility": format_value(window.get("mean_visibility")),
-                    "wrist_burst_clarity": format_value(
-                        window.get("wrist_burst_clarity")
+                    "grouped_candidate_count": format_value(
+                        window.get("grouped_candidate_count")
                     ),
-                    "debug_reason": window.get("debug_reason", ""),
+                    "confidence": window.get("confidence", "N/A"),
                 }
             )
         st.dataframe(string_safe_dataframe(rows), hide_index=True, width="stretch")
@@ -359,7 +361,43 @@ def display_auto_detection_summary(prefix, min_pitch_likeness, max_pitches):
 def display_rejected_debug_candidates(prefix):
     """Display rejected/high-activity candidates from the debug CSV."""
     debug_path = output_path(prefix, "pitch_window_candidates.csv")
+    windows_path = output_path(prefix, "pitch_windows.json")
     with st.expander("Rejected / debug candidates", expanded=False):
+        if windows_path.exists():
+            windows_report = load_json(windows_path)
+            rejected_windows = windows_report.get("rejected_windows", [])
+            if rejected_windows:
+                st.markdown("**Rejected grouped windows**")
+                rows = []
+                for window in rejected_windows:
+                    rows.append(
+                        {
+                            "candidate_peak_time": format_value(
+                                window.get("candidate_peak_time")
+                            ),
+                            "start_time": format_value(window.get("start_time")),
+                            "end_time": format_value(window.get("end_time")),
+                            "estimated_ffs_time": format_value(
+                                window.get("estimated_ffs_time")
+                            ),
+                            "estimated_release_time": format_value(
+                                window.get("estimated_release_time")
+                            ),
+                            "pitch_likeness_score": format_value(
+                                window.get("pitch_likeness_score")
+                            ),
+                            "grouped_candidate_count": format_value(
+                                window.get("grouped_candidate_count")
+                            ),
+                            "rejection_reason": window.get("rejection_reason", ""),
+                        }
+                    )
+                st.dataframe(
+                    string_safe_dataframe(rows),
+                    hide_index=True,
+                    width="stretch",
+                )
+
         if not debug_path.exists():
             st.info("No debug candidate CSV found.")
             return
