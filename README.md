@@ -442,6 +442,9 @@ means the selected wrist-speed peak may be ambiguous, at the edge of the search
 window, or based on low-visibility wrist landmarks, so the release frame should
 be visually confirmed in `pose_overlay.mp4` or the event review frames.
 
+In current local validation, release-frame detection matched manual labels
+closely, but more videos are needed before claiming general accuracy.
+
 ## Sequence Classification
 
 The analyzer does not assume every pitch has correct mechanics. It detects the

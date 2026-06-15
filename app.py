@@ -463,7 +463,10 @@ def display_analysis_summary(report):
 
     ball_release_confidence = report.get("ball_release_confidence")
     if isinstance(ball_release_confidence, (int, float)) and ball_release_confidence < 0.5:
-        st.warning("Ball release was detected with low confidence. Confirm release frame visually.")
+        st.warning(
+            "Ball release is an approximate 2D video-based estimate. Confirm "
+            "visually, especially for 30 fps footage."
+        )
 
     arm_warning = report.get("throwing_arm_quality_warning")
     if arm_warning and arm_warning != "No major 2D throwing arm quality warning.":
@@ -609,7 +612,8 @@ def build_pitch_report(report: dict) -> str:
         )
         if ball_release_confidence < 0.5:
             warnings.append(
-                "Ball release confidence is low; confirm the release frame visually."
+                "Ball release is an approximate 2D video-based estimate. Confirm "
+                "visually, especially for 30 fps footage."
             )
     if separation_warning and separation_warning != "No major 2D separation quality warning.":
         warnings.append(separation_warning)
@@ -641,7 +645,7 @@ def build_pitch_report(report: dict) -> str:
             "Confirm key event frames manually before drawing conclusions."
         )
     if isinstance(ball_release_confidence, (int, float)) and ball_release_confidence < 0.5:
-        focus_items.append("Manually verify the approximate ball release frame.")
+        focus_items.append("Visually confirm the approximate 2D ball release frame.")
     if pelvis_trunk_gap_ms is not None:
         focus_items.append("Compare pelvis-trunk gap across pitches.")
     if separation_warning and separation_warning != "No major 2D separation quality warning.":
@@ -938,11 +942,201 @@ def display_pitch_tab(prefix, window, video_path, throwing_hand):
     display_manual_event_correction(prefix, window, report, video_path, throwing_hand)
 
 
+def meaningful_quality_warning(report):
+    """Return the most useful single warning for a session summary row."""
+    ball_release_confidence = report.get("ball_release_confidence")
+    if isinstance(ball_release_confidence, (int, float)) and ball_release_confidence < 0.5:
+        return (
+            "Release frame should be visually confirmed, especially for 30 fps "
+            "footage."
+        )
+
+    arm_warning = report.get("throwing_arm_quality_warning")
+    if arm_warning and arm_warning != "No major 2D throwing arm quality warning.":
+        return arm_warning
+
+    sep_warning = report.get("hip_shoulder_separation_quality_warning")
+    if sep_warning and sep_warning != "No major 2D separation quality warning.":
+        return sep_warning
+
+    sequence_issue = report.get("sequence_issue")
+    if sequence_issue:
+        return sequence_issue
+
+    return "None"
+
+
+def pitch_report_path(prefix, window):
+    """Return the timing report path for one auto-detected pitch window."""
+    window_id = window.get("window_id")
+    pitch_prefix = f"{prefix}_window_{window_id}"
+    return output_path(pitch_prefix, "timing_report.json")
+
+
+def load_session_pitch_reports(prefix, windows):
+    """Load timing reports for selected pitch windows."""
+    pitch_reports = []
+    for window in windows:
+        report_path = pitch_report_path(prefix, window)
+        report = load_json(report_path) if report_path.exists() else None
+        pitch_reports.append(
+            {
+                "window": window,
+                "report": report,
+                "report_path": report_path,
+            }
+        )
+    return pitch_reports
+
+
+def build_session_summary_rows(pitch_reports):
+    """Build rows for the multi-pitch session summary table."""
+    rows = []
+    for item in pitch_reports:
+        window = item["window"]
+        report = item["report"]
+        report_path = item["report_path"]
+        window_id = window.get("window_id")
+
+        if report is None:
+            rows.append(
+                {
+                    "Pitch ID": f"Pitch {window_id}",
+                    "Window start time": format_value(window.get("start_time")),
+                    "Window end time": format_value(window.get("end_time")),
+                    "Front foot strike frame": "N/A",
+                    "Pelvis peak frame": "N/A",
+                    "Trunk peak frame": "N/A",
+                    "Ball release frame": "N/A",
+                    "FFS to release ms": "N/A",
+                    "Pelvis-trunk gap ms": "N/A",
+                    "Sequence classification": "N/A",
+                    "Max directional 2D hip-shoulder separation": "N/A",
+                    "Ball release confidence": "N/A",
+                    "Main warning": f"Missing timing report: {report_path}",
+                }
+            )
+            continue
+
+        max_directional_sep = report.get(
+            "max_hip_shoulder_separation_directional_delivery_window"
+        )
+        if max_directional_sep is None:
+            max_directional_sep = report.get(
+                "max_hip_shoulder_separation_directional_stretch_phase"
+            )
+
+        rows.append(
+            {
+                "Pitch ID": f"Pitch {window_id}",
+                "Window start time": format_value(window.get("start_time")),
+                "Window end time": format_value(window.get("end_time")),
+                "Front foot strike frame": format_value(
+                    report.get("front_foot_strike_frame")
+                ),
+                "Pelvis peak frame": format_value(report.get("pelvis_peak_frame")),
+                "Trunk peak frame": format_value(report.get("trunk_peak_frame")),
+                "Ball release frame": format_value(report.get("ball_release_frame")),
+                "FFS to release ms": format_value(report.get("ffs_to_ball_release_ms")),
+                "Pelvis-trunk gap ms": format_value(
+                    report.get("pelvis_trunk_peak_gap_ms")
+                ),
+                "Sequence classification": report.get(
+                    "sequence_classification",
+                    "N/A",
+                ),
+                "Max directional 2D hip-shoulder separation": format_value(
+                    max_directional_sep
+                ),
+                "Ball release confidence": format_value(
+                    report.get("ball_release_confidence")
+                ),
+                "Main warning": meaningful_quality_warning(report),
+            }
+        )
+
+    return rows
+
+
+def release_confidence_summary(reports):
+    """Summarize ball release confidence across reports."""
+    confidence_values = [
+        report.get("ball_release_confidence")
+        for report in reports
+        if isinstance(report.get("ball_release_confidence"), (int, float))
+    ]
+    if not confidence_values:
+        return "Release confidence is unavailable for this session."
+
+    low_count = sum(value < 0.5 for value in confidence_values)
+    if low_count == 0:
+        return "Release confidence is generally good across the selected pitches."
+    if low_count <= len(confidence_values) / 2:
+        return (
+            f"{low_count} pitch(es) should have release frame visually confirmed, "
+            "especially for 30 fps footage."
+        )
+    return (
+        "Release frame detection should be visually confirmed, especially because "
+        "this video is 30 fps."
+    )
+
+
+def display_session_summary(prefix, windows):
+    """Display a multi-pitch summary above the individual pitch tabs."""
+    pitch_reports = load_session_pitch_reports(prefix, windows)
+    rows = build_session_summary_rows(pitch_reports)
+    reports = [item["report"] for item in pitch_reports if item["report"] is not None]
+
+    st.subheader("Session Summary")
+    if not rows:
+        st.info("No pitch reports are available for the session summary.")
+        return
+
+    st.dataframe(string_safe_dataframe(rows), hide_index=True, width="stretch")
+    csv_data = pd.DataFrame(rows).fillna("N/A").to_csv(index=False)
+    st.download_button(
+        "Download session summary CSV",
+        data=csv_data,
+        file_name=f"{prefix}_session_summary.csv",
+        mime="text/csv",
+        key=f"{prefix}_session_summary_csv_download",
+    )
+
+    analyzed_count = len(reports)
+    basic_count = sum(
+        report.get("sequence_classification") == "pelvis_then_trunk"
+        for report in reports
+    )
+    near_simultaneous_count = sum(
+        report.get("sequence_classification") == "pelvis_trunk_near_simultaneous"
+        for report in reports
+    )
+    sequencing_issue_count = sum(
+        report.get("sequence_classification")
+        in {"trunk_before_pelvis", "peak_before_front_foot_strike"}
+        for report in reports
+    )
+    st.markdown(
+        "\n".join(
+            [
+                f"- Pitches analyzed: {analyzed_count}",
+                f"- Basic sequence correct: {basic_count}",
+                f"- Near-simultaneous pelvis/trunk peaks: {near_simultaneous_count}",
+                f"- Possible sequencing issue: {sequencing_issue_count}",
+                f"- {release_confidence_summary(reports)}",
+            ]
+        )
+    )
+
+
 def display_detected_pitch_tabs(prefix, windows_report):
     """Create one tab per detected pitch window."""
     windows = selected_pitch_windows(windows_report)
     if not windows:
         return
+
+    display_session_summary(prefix, windows)
 
     tabs = st.tabs([f"Pitch {window.get('window_id')}" for window in windows])
     video_path = windows_report.get("video_path", "")
