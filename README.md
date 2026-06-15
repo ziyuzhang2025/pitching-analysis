@@ -195,6 +195,24 @@ This runs `analyze_pitch_timing.py` automatically without passing
 
 - `outputs/ball_release_evaluation.csv`
 
+## Accuracy Evaluation
+
+Evaluate automatic pitch event detection against manually labeled ground truth
+frames from a labels JSON file:
+
+```bash
+python evaluate_pitch_accuracy.py --labels labels/pitch_labels.example.json --throwing-hand right --output-prefix eval_accuracy
+```
+
+The script runs `analyze_pitch_timing.py` for each labeled pitch window without
+manual event overrides, compares automatic frames against the labeled
+front foot strike, pelvis peak, trunk peak, and ball release frames, then writes:
+
+- `outputs/pitch_accuracy_evaluation.csv`
+
+Use `labels/pitch_labels.example.json` as a template and replace the example
+frame numbers with manually reviewed labels for your own videos.
+
 ## Sample Result
 
 Example terminal output from a filtered report summary:
