@@ -1082,7 +1082,189 @@ def release_confidence_summary(reports):
     )
 
 
-def display_session_summary(prefix, windows):
+def sequence_counts(reports):
+    """Count session-level sequence classifications."""
+    return {
+        "basic": sum(
+            report.get("sequence_classification") == "pelvis_then_trunk"
+            for report in reports
+        ),
+        "near_simultaneous": sum(
+            report.get("sequence_classification") == "pelvis_trunk_near_simultaneous"
+            for report in reports
+        ),
+        "sequencing_issue": sum(
+            report.get("sequence_classification")
+            in {"trunk_before_pelvis", "peak_before_front_foot_strike"}
+            for report in reports
+        ),
+    }
+
+
+def markdown_table(rows):
+    """Build a simple Markdown table from session summary rows."""
+    if not rows:
+        return "No session summary rows available."
+
+    display_rows = string_safe_dataframe(rows).to_dict("records")
+    headers = list(display_rows[0].keys())
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in display_rows:
+        values = [str(row.get(header, "N/A")).replace("\n", " ") for header in headers]
+        lines.append("| " + " | ".join(values) + " |")
+    return "\n".join(lines)
+
+
+def short_coach_takeaway(report):
+    """Create one concise, balanced takeaway for a pitch report."""
+    if report is None:
+        return "Timing report was not available for this pitch."
+
+    sequence_classification = report.get("sequence_classification")
+    ball_release_confidence = report.get("ball_release_confidence")
+
+    if sequence_classification == "pelvis_then_trunk":
+        takeaway = "Pelvis peak appears before trunk peak in this 2D review."
+    elif sequence_classification == "pelvis_trunk_near_simultaneous":
+        takeaway = (
+            "Pelvis and trunk peaks are close together; review whether trunk "
+            "rotation starts early or separation is limited."
+        )
+    elif sequence_classification == "trunk_before_pelvis":
+        takeaway = (
+            "Trunk appears to peak before pelvis; this may indicate early trunk "
+            "rotation, but confirm visually."
+        )
+    else:
+        takeaway = (
+            "Event order is unclear; confirm key frames and video angle before "
+            "drawing conclusions."
+        )
+
+    if isinstance(ball_release_confidence, (int, float)) and ball_release_confidence < 0.5:
+        takeaway += (
+            " Ball release is an approximate 2D estimate and should be visually "
+            "confirmed, especially for 30 fps footage."
+        )
+    return takeaway
+
+
+def build_session_report_markdown(
+    windows_report,
+    pitch_reports,
+    rows,
+    min_pitch_likeness,
+    max_pitches,
+):
+    """Build a downloadable Markdown report for the full pitching session."""
+    reports = [item["report"] for item in pitch_reports if item["report"] is not None]
+    counts = sequence_counts(reports)
+    video_path = windows_report.get("video_path", "N/A")
+    fps = format_value(windows_report.get("fps"))
+    throwing_hand = windows_report.get("throwing_hand", "N/A")
+    group_gap_seconds = windows_report.get("group_gap_seconds", 2.5)
+
+    lines = [
+        "# Baseball Pitching Session Report",
+        "",
+        f"- Video path: {video_path}",
+        f"- FPS: {fps}",
+        f"- Number of pitches analyzed: {len(reports)}",
+        "",
+        "## Detection Settings",
+        "",
+        f"- Throwing hand: {throwing_hand}",
+        f"- Minimum pitch likeness: {format_value(min_pitch_likeness)}",
+        f"- Max pitches: {format_value(max_pitches)}",
+        f"- Group gap seconds: {format_value(group_gap_seconds)}",
+        "",
+        "## Accuracy / Safety Note",
+        "",
+        (
+            "This report uses single-camera 2D pose landmarks. It is a video "
+            "review aid, not a full 3D biomechanics assessment."
+        ),
+        "",
+        "## Session Summary",
+        "",
+        f"- Pitches analyzed: {len(reports)}",
+        f"- Basic sequence correct: {counts['basic']}",
+        f"- Near-simultaneous pelvis/trunk peaks: {counts['near_simultaneous']}",
+        f"- Possible sequencing issues: {counts['sequencing_issue']}",
+        f"- {release_confidence_summary(reports)}",
+        "",
+        markdown_table(rows),
+        "",
+        "## Per-Pitch Summaries",
+        "",
+    ]
+
+    for item, row in zip(pitch_reports, rows):
+        window = item["window"]
+        report = item["report"]
+        pitch_id = row.get("Pitch ID", f"Pitch {window.get('window_id')}")
+        lines.extend(
+            [
+                f"### {pitch_id}",
+                "",
+                f"- Window: {format_value(window.get('start_time'))}s to {format_value(window.get('end_time'))}s",
+                f"- Sequence classification: {row.get('Sequence classification', 'N/A')}",
+                f"- FFS to release: {row.get('FFS to release ms', 'N/A')} ms",
+                f"- Pelvis-trunk gap: {row.get('Pelvis-trunk gap ms', 'N/A')} ms",
+                (
+                    "- Max directional 2D hip-shoulder separation: "
+                    f"{row.get('Max directional 2D hip-shoulder separation', 'N/A')} deg"
+                ),
+                f"- Ball release confidence: {row.get('Ball release confidence', 'N/A')}",
+                f"- Main warning: {row.get('Main warning', 'N/A')}",
+                f"- Coach-style takeaway: {short_coach_takeaway(report)}",
+                "",
+            ]
+        )
+
+    return "\n".join(lines)
+
+
+def display_export_session_report(
+    prefix,
+    windows_report,
+    pitch_reports,
+    rows,
+    min_pitch_likeness,
+    max_pitches,
+):
+    """Render downloadable Markdown and text session reports."""
+    st.subheader("Export Session Report")
+    report_text = build_session_report_markdown(
+        windows_report,
+        pitch_reports,
+        rows,
+        min_pitch_likeness,
+        max_pitches,
+    )
+    download_columns = st.columns(2)
+    with download_columns[0]:
+        st.download_button(
+            "Download Markdown Report",
+            data=report_text,
+            file_name="pitching_session_report.md",
+            mime="text/markdown",
+            key=f"{prefix}_session_markdown_report_download",
+        )
+    with download_columns[1]:
+        st.download_button(
+            "Download Text Report",
+            data=report_text,
+            file_name="pitching_session_report.txt",
+            mime="text/plain",
+            key=f"{prefix}_session_text_report_download",
+        )
+
+
+def display_session_summary(prefix, windows_report, windows, min_pitch_likeness, max_pitches):
     """Display a multi-pitch summary above the individual pitch tabs."""
     pitch_reports = load_session_pitch_reports(prefix, windows)
     rows = build_session_summary_rows(pitch_reports)
@@ -1128,15 +1310,34 @@ def display_session_summary(prefix, windows):
             ]
         )
     )
+    display_export_session_report(
+        prefix,
+        windows_report,
+        pitch_reports,
+        rows,
+        min_pitch_likeness,
+        max_pitches,
+    )
 
 
-def display_detected_pitch_tabs(prefix, windows_report):
+def display_detected_pitch_tabs(
+    prefix,
+    windows_report,
+    min_pitch_likeness="N/A",
+    max_pitches="N/A",
+):
     """Create one tab per detected pitch window."""
     windows = selected_pitch_windows(windows_report)
     if not windows:
         return
 
-    display_session_summary(prefix, windows)
+    display_session_summary(
+        prefix,
+        windows_report,
+        windows,
+        min_pitch_likeness,
+        max_pitches,
+    )
 
     tabs = st.tabs([f"Pitch {window.get('window_id')}" for window in windows])
     video_path = windows_report.get("video_path", "")
@@ -1371,7 +1572,12 @@ def main():
                 int(max_pitches),
             )
             if windows_report:
-                display_detected_pitch_tabs(prefix, windows_report)
+                display_detected_pitch_tabs(
+                    prefix,
+                    windows_report,
+                    float(min_pitch_likeness),
+                    int(max_pitches),
+                )
             if show_rejected_candidates:
                 display_rejected_debug_candidates(prefix)
     elif st.session_state.get("last_auto_prefix"):
@@ -1388,7 +1594,12 @@ def main():
             last_max_pitches,
         )
         if windows_report:
-            display_detected_pitch_tabs(prefix, windows_report)
+            display_detected_pitch_tabs(
+                prefix,
+                windows_report,
+                last_min_pitch_likeness,
+                last_max_pitches,
+            )
         if show_rejected_candidates:
             display_rejected_debug_candidates(prefix)
     else:
