@@ -527,10 +527,7 @@ def rotation_increase_score(df, row_position, fps):
     """Score whether hip/shoulder angular velocity rises after a candidate."""
     next_frames = max(1, int(round(0.300 * fps)))
     previous_frames = max(1, int(round(0.100 * fps)))
-    rotation = (
-        df["hip_angular_velocity"].abs().fillna(0)
-        + df["shoulder_angular_velocity"].abs().fillna(0)
-    ).to_numpy()
+    rotation = df["ffs_rotation_activity"].fillna(0).to_numpy()
 
     previous_start = max(0, row_position - previous_frames)
     previous_peak = candidate_metric(rotation, previous_start, row_position - previous_start, "max")
@@ -560,6 +557,8 @@ def build_front_foot_candidate(
     y_velocity_values = df["lead_ankle_y_velocity"].to_numpy()
     visibility_values = df[f"{lead_ankle}_visibility"].to_numpy()
 
+    current_speed = speed_values[row_position]
+    current_y_velocity = y_velocity_values[row_position]
     future_speed = candidate_metric(speed_values, row_position, stable_frames_required)
     future_y_abs = candidate_metric(
         np.abs(y_velocity_values),
@@ -574,6 +573,7 @@ def build_front_foot_candidate(
     )
     visibility = candidate_metric(visibility_values, row_position, stable_frames_required)
     stability = df.iloc[row_position]["lead_ankle_stability_score"]
+    current_rotation_activity = df.iloc[row_position].get("ffs_rotation_activity", np.nan)
 
     speed_drop_score = clamp((speed_threshold * 1.5 - future_speed) / (speed_threshold * 1.5))
     downward_score = clamp(previous_y_velocity / downward_threshold)
@@ -610,6 +610,14 @@ def build_front_foot_candidate(
         "processed_frame": int(df.iloc[row_position]["processed_frame"]),
         "score": round(score, 3),
         "stability_score": round(clamp(stability), 3),
+        "current_speed": (
+            round(float(current_speed), 4) if not pd.isna(current_speed) else None
+        ),
+        "current_y_velocity": (
+            round(float(current_y_velocity), 4)
+            if not pd.isna(current_y_velocity)
+            else None
+        ),
         "speed": round(float(future_speed), 4) if not pd.isna(future_speed) else None,
         "speed_threshold": round(float(speed_threshold), 4),
         "downward_score": round(downward_score, 3),
@@ -621,6 +629,11 @@ def build_front_foot_candidate(
         ),
         "y_velocity_after_abs": round(float(future_y_abs), 4) if not pd.isna(future_y_abs) else None,
         "rotation_increase_score": round(rotation_score, 3),
+        "rotation_activity": (
+            round(float(current_rotation_activity), 3)
+            if not pd.isna(current_rotation_activity)
+            else None
+        ),
         "rotation_peak_before": round(previous_rotation_peak, 3),
         "rotation_peak_after": round(future_rotation_peak, 3),
         "visibility": round(visibility_score, 3),
@@ -643,6 +656,7 @@ def detect_front_foot_strike(df, throwing_hand, fps):
             "frame": None,
             "confidence": 0.0,
             "candidates": [],
+            "all_candidates": [],
             "reason": "No lead ankle landmarks were detected.",
         }
 
@@ -672,6 +686,7 @@ def detect_front_foot_strike(df, throwing_hand, fps):
             "frame": None,
             "confidence": 0.0,
             "candidates": [],
+            "all_candidates": [],
             "reason": "Not enough processed frames to score front foot strike.",
         }
 
@@ -680,27 +695,70 @@ def detect_front_foot_strike(df, throwing_hand, fps):
     candidates_to_rank = sorted(candidates_to_rank, key=lambda item: item["score"], reverse=True)
     best_score_candidate = candidates_to_rank[0]
     best_score = best_score_candidate["score"]
+    best_future_rotation = max(
+        float(candidate.get("rotation_peak_after") or 0.0)
+        for candidate in candidates_to_rank
+    )
     similar_candidates = [
         candidate
         for candidate in candidates_to_rank
-        if best_score - candidate["score"] <= 0.05
+        if best_score - candidate["score"] <= 0.08
     ]
     earliest_reasonable_candidates = [
         candidate
         for candidate in similar_candidates
         if (
             candidate["rule_matched"]
-            and candidate["stability_score"] >= 0.85
+            and candidate["stability_score"] >= 0.70
             and candidate["speed"] is not None
             and candidate["speed_threshold"] is not None
-            and candidate["speed"] <= candidate["speed_threshold"]
-            and candidate["visibility"] >= 0.80
+            and candidate["speed"] <= candidate["speed_threshold"] * 1.20
+            and candidate["visibility"] >= 0.70
+        )
+    ]
+    contact_onset_candidates = [
+        candidate
+        for candidate in candidates_to_rank
+        if (
+            best_score - candidate["score"] <= 0.25
+            and candidate["current_speed"] is not None
+            and candidate["speed_threshold"] is not None
+            and candidate["current_speed"] <= candidate["speed_threshold"] * 1.20
+            and candidate["stable_y_score"] >= 0.60
+            and candidate["rotation_peak_after"] >= best_future_rotation * 0.60
+            and candidate["visibility"] >= 0.75
+        )
+    ]
+    early_stability_candidates = [
+        candidate
+        for candidate in candidates_to_rank
+        if (
+            best_score - candidate["score"] <= 0.14
+            and candidate["stability_score"] >= 0.55
+            and candidate["speed"] is not None
+            and candidate["speed_threshold"] is not None
+            and candidate["speed"] <= candidate["speed_threshold"] * 1.45
+            and candidate["stable_y_score"] >= 0.25
+            and candidate["rotation_peak_after"] >= best_future_rotation * 0.60
+            and candidate["visibility"] >= 0.60
         )
     ]
     earliest_similar_selection_used = bool(earliest_reasonable_candidates)
+    early_stability_selection_used = (
+        not earliest_similar_selection_used
+        and not contact_onset_candidates
+        and bool(early_stability_candidates)
+    )
+    contact_onset_selection_used = (
+        not earliest_similar_selection_used and bool(contact_onset_candidates)
+    )
 
     if earliest_similar_selection_used:
         best = sorted(earliest_reasonable_candidates, key=lambda item: item["frame"])[0]
+    elif contact_onset_selection_used:
+        best = sorted(contact_onset_candidates, key=lambda item: item["frame"])[0]
+    elif early_stability_selection_used:
+        best = sorted(early_stability_candidates, key=lambda item: item["frame"])[0]
     else:
         best = best_score_candidate
 
@@ -721,6 +779,10 @@ def detect_front_foot_strike(df, throwing_hand, fps):
         f"best_score={best_score}. "
         f"similar_candidates={len(similar_candidates)}. "
         f"earliest_similar_candidate_selection_used={earliest_similar_selection_used}. "
+        f"contact_onset_selection_used={contact_onset_selection_used}. "
+        f"contact_onset_candidates={len(contact_onset_candidates)}. "
+        f"early_stability_selection_used={early_stability_selection_used}. "
+        f"early_stability_candidates={len(early_stability_candidates)}. "
         f"selected_frame={best['frame']}. "
         f"Stability={best['stability_score']}, speed={best['speed']} "
         f"(threshold {best['speed_threshold']}), "
@@ -729,6 +791,17 @@ def detect_front_foot_strike(df, throwing_hand, fps):
     )
     if earliest_similar_selection_used:
         reason += " Earliest high-quality similar candidate was selected."
+    if contact_onset_selection_used:
+        reason += (
+            " Earliest contact-onset candidate was selected because current ankle "
+            "speed had dropped, y velocity was settling, and rotation activity was "
+            "already rising despite later pose jitter."
+        )
+    if early_stability_selection_used:
+        reason += (
+            " Earliest stable-start candidate was selected because ankle speed had "
+            "dropped and rotation activity was already rising."
+        )
     if len(similar_candidates) > 1:
         reason += f" Confidence reduced because {len(similar_candidates)} candidates had similar scores."
     if best["visibility"] < 0.60:
@@ -740,8 +813,54 @@ def detect_front_foot_strike(df, throwing_hand, fps):
         "frame": int(best["frame"]),
         "confidence": confidence,
         "candidates": shown_candidates,
+        "all_candidates": scored_candidates,
         "reason": reason,
     }
+
+
+def write_ffs_debug_csv(df, throwing_hand, fps, selected_ffs_frame, output_path):
+    """Write per-frame front foot strike debug signals and candidate scores."""
+    lead_ankle = lead_ankle_name(throwing_hand)
+    auto_result = detect_front_foot_strike(df, throwing_hand, fps)
+    candidate_by_frame = {
+        candidate["frame"]: candidate
+        for candidate in auto_result.get("all_candidates", [])
+    }
+
+    rows = []
+    for _, row in df.iterrows():
+        frame = int(row["frame"])
+        candidate = candidate_by_frame.get(frame, {})
+        rows.append(
+            {
+                "frame": frame,
+                "processed_frame": int(row["processed_frame"]),
+                "time": row.get("time_seconds"),
+                "lead_ankle_x": row.get(f"{lead_ankle}_x"),
+                "lead_ankle_y": row.get(f"{lead_ankle}_y"),
+                "lead_ankle_x_velocity": row.get("lead_ankle_x_velocity"),
+                "lead_ankle_y_velocity": row.get("lead_ankle_y_velocity"),
+                "lead_ankle_speed": row.get("lead_ankle_speed"),
+                "lead_ankle_stability_score": row.get("lead_ankle_stability_score"),
+                "rotation_activity": row.get("ffs_rotation_activity"),
+                "visibility": row.get(f"{lead_ankle}_visibility"),
+                "candidate_score": candidate.get("score"),
+                "candidate_rule_matched": candidate.get("rule_matched"),
+                "candidate_stability_score": candidate.get("stability_score"),
+                "candidate_current_speed": candidate.get("current_speed"),
+                "candidate_current_y_velocity": candidate.get("current_y_velocity"),
+                "candidate_speed": candidate.get("speed"),
+                "candidate_speed_threshold": candidate.get("speed_threshold"),
+                "candidate_stable_y_score": candidate.get("stable_y_score"),
+                "candidate_rotation_increase_score": candidate.get(
+                    "rotation_increase_score"
+                ),
+                "candidate_rotation_peak_after": candidate.get("rotation_peak_after"),
+                "selected_as_ffs": frame == selected_ffs_frame,
+            }
+        )
+
+    pd.DataFrame(rows).to_csv(output_path, index=False)
 
 
 def peak_search_window_frames(front_foot_strike_frame, fps, start_ms, end_ms):
@@ -787,6 +906,94 @@ def peak_in_frame_window(df, series_name, start_frame, end_frame):
 
     peak_index = search[series_name].abs().idxmax()
     return int(search.loc[peak_index, "frame"])
+
+
+def detect_pelvis_peak(df, start_frame, end_frame):
+    """
+    Detect pelvis peak timing from hip angular velocity.
+
+    For pitching sequence timing, the useful pelvis event is often the first
+    strong pelvis rotation burst after front foot strike, not necessarily the
+    later absolute maximum that can be inflated by 2D landmark noise.
+    """
+    if start_frame is None or end_frame is None:
+        return {
+            "frame": None,
+            "candidates": [],
+            "reason": "Pelvis peak search window was not available.",
+        }
+
+    search = df[
+        (df["frame"] >= start_frame) & (df["frame"] <= end_frame)
+    ][["frame", "hip_angle_smoothed", "hip_angular_velocity"]].dropna()
+    if search.empty:
+        return {
+            "frame": None,
+            "candidates": [],
+            "reason": "No pelvis angular velocity values were available in the search window.",
+        }
+
+    search = search.copy()
+    search["pelvis_angular_velocity_abs"] = search["hip_angular_velocity"].abs()
+    max_abs_velocity = float(search["pelvis_angular_velocity_abs"].max())
+    if max_abs_velocity <= 0:
+        return {
+            "frame": int(search.iloc[0]["frame"]),
+            "candidates": [],
+            "reason": "Pelvis angular velocity was zero throughout the search window.",
+        }
+
+    strong_threshold = max(120.0, max_abs_velocity * 0.25)
+    very_strong_threshold = max_abs_velocity * 0.80
+    candidates = []
+
+    previous_abs_velocity = None
+    for _, row in search.iterrows():
+        frame = int(row["frame"])
+        abs_velocity = float(row["pelvis_angular_velocity_abs"])
+        rising = previous_abs_velocity is None or abs_velocity >= previous_abs_velocity
+        candidate_type = None
+        if abs_velocity >= strong_threshold and rising:
+            candidate_type = "first_strong_rising_rotation"
+        elif abs_velocity >= very_strong_threshold:
+            candidate_type = "near_absolute_max_rotation"
+
+        if candidate_type:
+            candidates.append(
+                {
+                    "frame": frame,
+                    "pelvis_angle": round(float(row["hip_angle_smoothed"]), 3),
+                    "pelvis_angular_velocity": round(float(row["hip_angular_velocity"]), 3),
+                    "pelvis_angular_velocity_abs": round(abs_velocity, 3),
+                    "max_abs_velocity": round(max_abs_velocity, 3),
+                    "strong_threshold": round(strong_threshold, 3),
+                    "candidate_type": candidate_type,
+                }
+            )
+        previous_abs_velocity = abs_velocity
+
+    if candidates:
+        selected = candidates[0]
+        reason = (
+            f"Selected frame {selected['frame']} as first strong pelvis rotation. "
+            f"abs_velocity={selected['pelvis_angular_velocity_abs']}, "
+            f"max_abs_velocity={selected['max_abs_velocity']}, "
+            f"strong_threshold={selected['strong_threshold']}. "
+            "This favors the earlier meaningful pelvis rotation burst over a later absolute/noisy maximum."
+        )
+        return {
+            "frame": selected["frame"],
+            "candidates": candidates[:8],
+            "reason": reason,
+        }
+
+    peak_index = search["pelvis_angular_velocity_abs"].idxmax()
+    selected_frame = int(search.loc[peak_index, "frame"])
+    return {
+        "frame": selected_frame,
+        "candidates": [],
+        "reason": "No strong rising pelvis candidate was found, so the absolute max was used.",
+    }
 
 
 def max_value_frame_in_window(df, series_name, start_frame, end_frame):
@@ -1521,6 +1728,10 @@ def add_calculations(df, fps, smoothing_window, throwing_hand):
     df["hip_angular_velocity"] = angular_velocity_degrees_per_second(
         df["hip_angle_smoothed"], fps
     )
+    df["ffs_rotation_activity"] = (
+        df["hip_angular_velocity"].abs().fillna(0)
+        + df["shoulder_angular_velocity"].abs().fillna(0)
+    )
 
     df = add_lead_ankle_debug(df, fps, throwing_hand)
     df = add_throwing_wrist_debug(df, fps, throwing_hand)
@@ -1585,15 +1796,22 @@ def build_timing_report(
         trunk_peak_search_end_ms,
     )
 
-    auto_pelvis_peak_frame = peak_in_frame_window(
+    auto_pelvis_peak = detect_pelvis_peak(
         df,
-        "hip_angular_velocity",
         pelvis_search_start_frame,
         pelvis_search_end_frame,
     )
+    auto_pelvis_peak_frame = auto_pelvis_peak["frame"]
     pelvis_peak_frame, pelvis_method = choose_event(
         manual_pelvis_peak_frame, auto_pelvis_peak_frame
     )
+    if manual_pelvis_peak_frame is not None:
+        pelvis_peak_debug_reason = (
+            f"Manual override used for pelvis peak. Auto detection suggested "
+            f"frame {auto_pelvis_peak_frame}. Auto reason: {auto_pelvis_peak['reason']}"
+        )
+    else:
+        pelvis_peak_debug_reason = auto_pelvis_peak["reason"]
 
     auto_trunk_peak_frame = peak_in_frame_window(
         df,
@@ -1777,6 +1995,8 @@ def build_timing_report(
         "ball_release_search_end_ms": ball_release_search_end_ms,
         "pelvis_peak_search_start_frame": pelvis_search_start_frame,
         "pelvis_peak_search_end_frame": pelvis_search_end_frame,
+        "pelvis_peak_candidates": auto_pelvis_peak["candidates"],
+        "pelvis_peak_debug_reason": pelvis_peak_debug_reason,
         "trunk_peak_search_start_frame": trunk_search_start_frame,
         "trunk_peak_search_end_frame": trunk_search_end_frame,
         "ball_release_search_start_frame": auto_ball_release["search_start_frame"],
@@ -1786,6 +2006,12 @@ def build_timing_report(
         "front_foot_strike_debug_reason": front_foot_strike_debug_reason,
         "front_foot_strike_frame": front_foot_strike_frame,
         "pelvis_peak_frame": pelvis_peak_frame,
+        "pelvis_angle": value_at_frame(df, pelvis_peak_frame, "hip_angle_smoothed"),
+        "pelvis_angular_velocity": value_at_frame(
+            df,
+            pelvis_peak_frame,
+            "hip_angular_velocity",
+        ),
         "trunk_peak_frame": trunk_peak_frame,
         "ball_release_frame": ball_release_frame,
         "ball_release_confidence": ball_release_confidence,
@@ -2595,6 +2821,7 @@ def main():
     report_json_path = output_path(output_dir, args.output_prefix, "timing_report.json")
     plot_path = output_path(output_dir, args.output_prefix, "angles_plot.png")
     overlay_path = output_path(output_dir, args.output_prefix, "pose_overlay.mp4")
+    ffs_debug_path = output_path(output_dir, args.output_prefix, "ffs_debug.csv")
     event_review_dir = review_dir_path(output_dir, args.output_prefix, "review_frames")
     all_review_dir = review_dir_path(output_dir, args.output_prefix, "all_review_frames")
 
@@ -2629,6 +2856,13 @@ def main():
     )
 
     df.to_csv(landmarks_csv_path, index=False)
+    write_ffs_debug_csv(
+        df,
+        args.throwing_hand,
+        fps,
+        report.get("front_foot_strike_frame"),
+        ffs_debug_path,
+    )
     write_timing_report(report, report_json_path)
     write_angles_plot(df, report, plot_path)
     write_pose_overlay_video(
@@ -2664,6 +2898,7 @@ def main():
         )
 
     print(f"Saved landmarks: {landmarks_csv_path}")
+    print(f"Saved FFS debug CSV: {ffs_debug_path}")
     print(f"Saved timing report: {report_json_path}")
     print(f"Saved angle plot: {plot_path}")
     print(f"Saved pose overlay video: {overlay_path}")
