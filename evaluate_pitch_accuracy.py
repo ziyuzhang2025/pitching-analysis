@@ -29,6 +29,16 @@ EVENT_FIELDS = [
 ]
 
 
+def frame_from_time(time_seconds, fps):
+    """Convert a timestamp to an approximate full-video frame number."""
+    if time_seconds is None or fps is None:
+        return None
+    try:
+        return int(round(float(time_seconds) * float(fps)))
+    except (TypeError, ValueError):
+        return None
+
+
 def parse_args():
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
@@ -114,19 +124,98 @@ def frame_error(auto_frame, labeled_frame):
     return signed_error, abs(signed_error)
 
 
+def event_frame_values(pitch):
+    """Return labeled event frames in field order."""
+    return [pitch.get(event_field) for event_field in EVENT_FIELDS]
+
+
+def label_warning_messages(pitch, start_frame, end_frame):
+    """Return warnings for labels that appear outside the expected frame window."""
+    warnings = []
+    labeled_frames = [
+        frame for frame in event_frame_values(pitch) if frame is not None
+    ]
+    if start_frame is None or end_frame is None or not labeled_frames:
+        return warnings
+
+    outside_events = []
+    for event_field in EVENT_FIELDS:
+        frame = pitch.get(event_field)
+        if frame is not None and not (start_frame <= int(frame) <= end_frame):
+            outside_events.append(f"{event_field}={frame}")
+
+    if outside_events:
+        warnings.append(
+            "WARNING: labeled event frame(s) outside the labeled window "
+            f"[{start_frame}, {end_frame}]: {', '.join(outside_events)}"
+        )
+
+    window_length_frames = max(0, end_frame - start_frame)
+    window_relative_like = (
+        start_frame > window_length_frames
+        and all(0 <= int(frame) <= window_length_frames for frame in labeled_frames)
+    )
+    if window_relative_like:
+        warnings.append(
+            "WARNING: labels look window-relative, not full-video absolute. "
+            "Expected labels/pitch_labels.json to store absolute full-video frame "
+            "numbers. Add start_frame to window-relative labels before evaluating."
+        )
+
+    return warnings
+
+
+def print_pitch_debug(pitch, report):
+    """Print per-pitch label and auto frame details before comparison."""
+    fps = report.get("fps") or pitch.get("fps")
+    start_frame = pitch.get("start_frame")
+    end_frame = pitch.get("end_frame")
+    if start_frame is None:
+        start_frame = frame_from_time(pitch.get("start_time"), fps)
+    if end_frame is None:
+        end_frame = frame_from_time(pitch.get("end_time"), fps)
+
+    print("\nPitch evaluation details:")
+    print(f"  pitch_id: {pitch.get('pitch_id')}")
+    print(f"  video_path: {pitch.get('video_path')}")
+    print(f"  start_time/end_time: {pitch.get('start_time')} / {pitch.get('end_time')}")
+    print(f"  start_frame/end_frame: {start_frame} / {end_frame}")
+
+    for event_field in EVENT_FIELDS:
+        event_name = event_field.replace("_frame", "")
+        print(
+            f"  labeled {event_name}: {pitch.get(event_field)} | "
+            f"auto {event_name}: {report.get(event_field)}"
+        )
+
+    for warning in label_warning_messages(pitch, start_frame, end_frame):
+        print(f"  {warning}")
+
+
 def evaluate_pitch(pitch, throwing_hand, base_output_prefix):
     """Run one pitch and return a CSV-ready evaluation row."""
     output_prefix = pitch_output_prefix(base_output_prefix, pitch)
     run_analyzer_for_pitch(pitch, throwing_hand, output_prefix)
     report = load_timing_report(output_prefix)
+    fps = report.get("fps")
+    start_frame = pitch.get("start_frame")
+    end_frame = pitch.get("end_frame")
+    if start_frame is None:
+        start_frame = frame_from_time(pitch.get("start_time"), fps)
+    if end_frame is None:
+        end_frame = frame_from_time(pitch.get("end_time"), fps)
+    print_pitch_debug(pitch, report)
 
     row = {
         "pitch_id": pitch.get("pitch_id"),
         "video_path": pitch.get("video_path"),
         "start_time": pitch.get("start_time"),
         "end_time": pitch.get("end_time"),
+        "start_frame": start_frame,
+        "end_frame": end_frame,
+        "label_source": pitch.get("label_source"),
         "output_prefix": output_prefix,
-        "fps": report.get("fps"),
+        "fps": fps,
     }
 
     for event_field in EVENT_FIELDS:
@@ -150,6 +239,9 @@ def csv_fields():
         "video_path",
         "start_time",
         "end_time",
+        "start_frame",
+        "end_frame",
+        "label_source",
         "output_prefix",
         "fps",
     ]

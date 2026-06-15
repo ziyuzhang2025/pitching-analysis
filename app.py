@@ -20,6 +20,7 @@ import streamlit as st
 
 PROJECT_ROOT = Path(__file__).parent.resolve()
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+DEFAULT_LABELS_PATH = PROJECT_ROOT / "labels" / "pitch_labels.json"
 
 
 def safe_output_prefix(video_path):
@@ -51,6 +52,61 @@ def load_json(path):
         return json.load(f)
 
 
+def load_labels(path: str) -> dict:
+    """Load ground-truth labels, creating an empty structure if missing."""
+    labels_path = Path(path)
+    if not labels_path.is_absolute():
+        labels_path = PROJECT_ROOT / labels_path
+    if not labels_path.exists():
+        return {"pitches": []}
+
+    with labels_path.open("r", encoding="utf-8") as f:
+        labels = json.load(f)
+
+    if isinstance(labels, list):
+        return {"pitches": labels}
+    if "pitches" not in labels or not isinstance(labels["pitches"], list):
+        labels["pitches"] = []
+    return labels
+
+
+def save_labels(path: str, labels: dict) -> None:
+    """Save ground-truth labels JSON, creating the labels directory if needed."""
+    labels_path = Path(path)
+    if not labels_path.is_absolute():
+        labels_path = PROJECT_ROOT / labels_path
+    labels_path.parent.mkdir(parents=True, exist_ok=True)
+    with labels_path.open("w", encoding="utf-8") as f:
+        json.dump(labels, f, indent=2)
+
+
+def upsert_pitch_label(labels: dict, video_path: str, pitch_label: dict) -> dict:
+    """Insert or replace a pitch label by matching video_path and pitch_id."""
+    labels.setdefault("pitches", [])
+    pitch_label = dict(pitch_label)
+    pitch_label["video_path"] = video_path
+
+    for index, existing_label in enumerate(labels["pitches"]):
+        same_video = existing_label.get("video_path") == video_path
+        same_pitch = existing_label.get("pitch_id") == pitch_label.get("pitch_id")
+        if same_video and same_pitch:
+            labels["pitches"][index] = pitch_label
+            return labels
+
+    labels["pitches"].append(pitch_label)
+    return labels
+
+
+def frame_from_time(time_seconds, fps):
+    """Convert a timestamp to an approximate full-video frame number."""
+    if time_seconds is None or fps is None:
+        return None
+    try:
+        return int(round(float(time_seconds) * float(fps)))
+    except (TypeError, ValueError):
+        return None
+
+
 def format_value(value, digits=2):
     """Format values for compact report tables."""
     if value is None:
@@ -60,6 +116,12 @@ def format_value(value, digits=2):
     return value
 
 
+def string_safe_dataframe(rows_or_dataframe):
+    """Return a Streamlit/Arrow-friendly DataFrame with string values only."""
+    df = pd.DataFrame(rows_or_dataframe)
+    return df.fillna("N/A").astype(str)
+
+
 def report_table(title, report, fields):
     """Display selected report fields in a readable two-column table."""
     st.markdown(f"**{title}**")
@@ -67,7 +129,7 @@ def report_table(title, report, fields):
         {"Metric": field, "Value": format_value(report.get(field))}
         for field in fields
     ]
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.dataframe(string_safe_dataframe(rows), hide_index=True, width="stretch")
 
 
 def build_auto_detect_command(
@@ -284,7 +346,7 @@ def display_auto_detection_summary(prefix, min_pitch_likeness, max_pitches):
                     "debug_reason": window.get("debug_reason", ""),
                 }
             )
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+        st.dataframe(string_safe_dataframe(rows), hide_index=True, width="stretch")
     else:
         st.warning(
             "No validated pitch windows found. Try lowering min pitch likeness "
@@ -339,7 +401,7 @@ def display_rejected_debug_candidates(prefix):
                 "visibility": candidate_column("visibility", "mean_visibility"),
             }
         )
-        st.dataframe(display, hide_index=True, use_container_width=True)
+        st.dataframe(string_safe_dataframe(display), hide_index=True, width="stretch")
 
 
 def display_analysis_summary(report):
@@ -625,33 +687,40 @@ def display_corrected_analysis(output_prefix):
 def display_manual_event_correction(prefix, window, report, video_path, throwing_hand):
     """Render per-pitch manual event correction controls."""
     window_id = window.get("window_id")
+    pitch_id = f"window_{window_id}"
     corrected_prefix = f"{prefix}_window_{window_id}_manual"
+    fps = report.get("fps")
+    start_frame = frame_from_time(window.get("start_time"), fps)
+    end_frame = frame_from_time(window.get("end_time"), fps)
     with st.expander("Manual event correction", expanded=False):
-        st.caption("Adjust event frames after visually reviewing the pose overlay.")
+        st.caption(
+            "Adjust event frames after visually reviewing the pose overlay. "
+            "Frame inputs are full-video absolute frame numbers, not window-relative frames."
+        )
         columns = st.columns(4)
         front_foot_strike_frame = columns[0].number_input(
-            "Front foot strike frame",
+            "Front foot strike frame (absolute)",
             min_value=0,
             value=int(report.get("front_foot_strike_frame") or 0),
             step=1,
             key=f"{prefix}_{window_id}_manual_ffs",
         )
         pelvis_peak_frame = columns[1].number_input(
-            "Pelvis peak frame",
+            "Pelvis peak frame (absolute)",
             min_value=0,
             value=int(report.get("pelvis_peak_frame") or 0),
             step=1,
             key=f"{prefix}_{window_id}_manual_pelvis",
         )
         trunk_peak_frame = columns[2].number_input(
-            "Trunk peak frame",
+            "Trunk peak frame (absolute)",
             min_value=0,
             value=int(report.get("trunk_peak_frame") or 0),
             step=1,
             key=f"{prefix}_{window_id}_manual_trunk",
         )
         ball_release_frame = columns[3].number_input(
-            "Ball release frame",
+            "Ball release frame (absolute)",
             min_value=0,
             value=int(report.get("ball_release_frame") or 0),
             step=1,
@@ -686,6 +755,49 @@ def display_manual_event_correction(prefix, window, report, video_path, throwing
                 )
                 return
             st.success("Manual-corrected analysis complete.")
+
+        pitch_label = {
+            "video_path": video_path,
+            "pitch_id": pitch_id,
+            "start_time": window.get("start_time"),
+            "end_time": window.get("end_time"),
+            "fps": fps,
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+            "label_source": "manual_streamlit",
+            "front_foot_strike_frame": int(front_foot_strike_frame),
+            "pelvis_peak_frame": int(pelvis_peak_frame),
+            "trunk_peak_frame": int(trunk_peak_frame),
+            "ball_release_frame": int(ball_release_frame),
+        }
+
+        if st.button(
+            "Save corrected frames as ground-truth label",
+            key=f"{prefix}_{window_id}_save_ground_truth",
+        ):
+            labels = load_labels(str(DEFAULT_LABELS_PATH))
+            labels = upsert_pitch_label(labels, video_path, pitch_label)
+            save_labels(str(DEFAULT_LABELS_PATH), labels)
+            st.session_state[f"{prefix}_{window_id}_saved_label"] = pitch_label
+            st.success("Saved ground-truth label to labels/pitch_labels.json")
+
+    saved_label = st.session_state.get(f"{prefix}_{window_id}_saved_label")
+    if saved_label is None and DEFAULT_LABELS_PATH.exists():
+        labels = load_labels(str(DEFAULT_LABELS_PATH))
+        saved_label = next(
+            (
+                label
+                for label in labels.get("pitches", [])
+                if label.get("video_path") == video_path
+                and label.get("pitch_id") == pitch_id
+            ),
+            None,
+        )
+    with st.expander("Current saved label", expanded=False):
+        if saved_label:
+            st.json(saved_label)
+        else:
+            st.info("No saved ground-truth label for this pitch yet.")
 
     if output_path(corrected_prefix, "timing_report.json").exists():
         display_corrected_analysis(corrected_prefix)
