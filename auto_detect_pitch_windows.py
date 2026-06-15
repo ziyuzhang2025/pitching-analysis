@@ -68,6 +68,18 @@ def parse_args():
         help="Maximum allowed overlap ratio with a higher-scoring selected window.",
     )
     parser.add_argument(
+        "--same-pitch-gap-seconds",
+        type=float,
+        default=2.0,
+        help="Group candidate detections within this release-time gap as the same pitch.",
+    )
+    parser.add_argument(
+        "--group-gap-seconds",
+        type=float,
+        default=2.5,
+        help="Group candidate detections within this FFS/peak-time gap as the same pitch.",
+    )
+    parser.add_argument(
         "--debug-candidates",
         action="store_true",
         help="Write a CSV with second-stage validation details for candidates.",
@@ -466,6 +478,13 @@ def validate_candidate_window(
     lead_stability = lead_ankle_stability_score(
         window_df, fps, candidate_time, throwing_hand
     )
+    estimated_release_time = wrist_speed_peak_time
+    estimated_ffs_time = max(start_time, candidate_time - 0.35)
+    has_valid_estimated_timing = estimated_ffs_time < estimated_release_time
+    if has_valid_estimated_timing:
+        start_time = max(0.0, estimated_ffs_time - 0.5)
+        end_time = min(duration_seconds, estimated_release_time + 0.5)
+
     has_clear_wrist_acceleration = (
         wrist_speed_peak >= median_wrist_speed * 1.35
         and wrist_burst_clarity >= 0.25
@@ -525,13 +544,14 @@ def validate_candidate_window(
         "lead_ankle_stability_after_peak": lead_stability,
         "has_clear_wrist_acceleration": bool(has_clear_wrist_acceleration),
         "has_rotation_activity": bool(has_rotation_activity),
-        "estimated_release_time": wrist_speed_peak_time,
-        "estimated_ffs_time": max(start_time, candidate_time - 0.35),
+        "estimated_release_time": estimated_release_time,
+        "estimated_ffs_time": estimated_ffs_time,
         "normalized_wrist_peak": normalized_wrist_peak,
         "normalized_rotation_peak": normalized_rotation_peak,
         "wrist_burst_clarity": wrist_burst_clarity,
         "pitch_likeness_score": float(pitch_likeness_score),
         "validation_passed": bool(validation_passed),
+        "selected_window": False,
         "rejection_reason": " / ".join(rejection_reasons) if rejection_reasons else "",
         "confidence": confidence,
         "debug_reason": (
@@ -542,6 +562,97 @@ def validate_candidate_window(
     }
 
 
+def candidate_group_time(candidate):
+    """Return the time used to group candidates that likely belong to one pitch."""
+    ffs_time = candidate.get("estimated_ffs_time")
+    if ffs_time is not None and np.isfinite(ffs_time):
+        return float(ffs_time)
+    return float(candidate["candidate_peak_time"])
+
+
+def candidate_selection_key(candidate):
+    """Sort key for choosing the best representative from a grouped pitch."""
+    estimated_ffs = candidate.get("estimated_ffs_time")
+    ffs_sort_value = -float(estimated_ffs) if estimated_ffs is not None and np.isfinite(estimated_ffs) else -float(candidate["candidate_peak_time"])
+    return (
+        float(candidate.get("pitch_likeness_score") or 0.0),
+        float(candidate.get("activity_score") or 0.0),
+        float(candidate.get("mean_visibility") or 0.0),
+        ffs_sort_value,
+    )
+
+
+def group_candidates_by_pitch(candidates, group_gap_seconds):
+    """Group candidates with nearby estimated FFS or peak times as the same pitch."""
+    if not candidates:
+        return []
+
+    sorted_candidates = sorted(candidates, key=candidate_group_time)
+    groups = []
+    current_group = [sorted_candidates[0]]
+    current_group_time = candidate_group_time(sorted_candidates[0])
+
+    for candidate in sorted_candidates[1:]:
+        candidate_time = candidate_group_time(candidate)
+        if abs(candidate_time - current_group_time) <= group_gap_seconds:
+            current_group.append(candidate)
+            # Chain nearby candidates together. A single pitch can produce
+            # several FFS, wrist acceleration, release, and follow-through
+            # activity peaks; adjacent grouping times within the gap stay one
+            # same-pitch group.
+            current_group_time = candidate_time
+        else:
+            groups.append(current_group)
+            current_group = [candidate]
+            current_group_time = candidate_time
+
+    groups.append(current_group)
+    return groups
+
+
+def final_group_rejection_reason(candidate, min_pitch_likeness):
+    """Return a final grouped-window rejection reason, or an empty string."""
+    estimated_ffs = candidate.get("estimated_ffs_time")
+    estimated_release = candidate.get("estimated_release_time")
+    phase_duration = None
+    if estimated_ffs is not None and estimated_release is not None:
+        phase_duration = estimated_release - estimated_ffs
+
+    reasons = []
+    if float(candidate.get("mean_visibility") or 0.0) < 0.85:
+        reasons.append("mean visibility below 0.85")
+    if float(candidate.get("pitch_likeness_score") or 0.0) < min_pitch_likeness:
+        reasons.append("pitch_likeness below threshold")
+    if float(candidate.get("wrist_burst_clarity") or 0.0) < 0.80:
+        reasons.append("wrist burst clarity below 0.80")
+    if estimated_ffs is None or estimated_release is None or not np.isfinite(estimated_ffs) or not np.isfinite(estimated_release):
+        reasons.append("missing estimated FFS or release time")
+    elif estimated_release <= estimated_ffs:
+        reasons.append("estimated release is not after estimated FFS")
+    elif phase_duration < 0.15:
+        reasons.append("estimated pitch phase shorter than 0.15s")
+    elif phase_duration > 1.50:
+        reasons.append("estimated pitch phase longer than 1.50s")
+
+    return " / ".join(reasons)
+
+
+def update_window_from_estimated_phase(candidate, duration_seconds):
+    """Build final window boundaries around estimated FFS and release if valid."""
+    estimated_ffs = candidate.get("estimated_ffs_time")
+    estimated_release = candidate.get("estimated_release_time")
+    if (
+        estimated_ffs is not None
+        and estimated_release is not None
+        and np.isfinite(estimated_ffs)
+        and np.isfinite(estimated_release)
+        and estimated_release > estimated_ffs
+    ):
+        candidate["start_time"] = max(0.0, float(estimated_ffs) - 0.5)
+        candidate["end_time"] = min(duration_seconds, float(estimated_release) + 0.5)
+    return candidate
+
+
 def find_candidate_peaks(
     df,
     fps,
@@ -550,6 +661,7 @@ def find_candidate_peaks(
     throwing_hand,
     min_pitch_likeness,
     max_overlap_ratio,
+    group_gap_seconds,
 ):
     """Find high-activity peaks, validate them, and select pitch-like windows."""
     median_score = safe_float(df["pitch_activity_score"].median(), 0.0)
@@ -576,11 +688,41 @@ def find_candidate_peaks(
         for candidate in raw_candidates
     ]
 
-    sorted_candidates = sorted(
-        validated_candidates,
-        key=lambda item: item["pitch_likeness_score"],
-        reverse=True,
+    valid_candidates = [
+        candidate for candidate in validated_candidates if candidate["validation_passed"]
+    ]
+    candidate_groups = group_candidates_by_pitch(
+        valid_candidates,
+        group_gap_seconds,
     )
+
+    group_winners = []
+    rejected_windows = []
+    for group in candidate_groups:
+        best_candidate = max(group, key=candidate_selection_key)
+        best_candidate["grouped_candidate_count"] = len(group)
+        best_candidate["grouped_candidate_peak_times"] = [
+            round(float(candidate["candidate_peak_time"]), 3)
+            for candidate in group
+        ]
+        best_candidate["grouping_method"] = "estimated_ffs_release_grouping"
+        update_window_from_estimated_phase(best_candidate, duration_seconds)
+        for candidate in group:
+            if candidate is not best_candidate:
+                candidate["validation_passed"] = False
+                candidate["selected_window"] = False
+                candidate["rejection_reason"] = "duplicate of nearby higher-confidence pitch"
+
+        rejection_reason = final_group_rejection_reason(best_candidate, min_pitch_likeness)
+        if rejection_reason:
+            best_candidate["validation_passed"] = False
+            best_candidate["selected_window"] = False
+            best_candidate["rejection_reason"] = rejection_reason
+            rejected_windows.append(dict(best_candidate))
+        else:
+            group_winners.append(best_candidate)
+
+    sorted_candidates = sorted(group_winners, key=candidate_selection_key, reverse=True)
 
     selected = []
     for candidate in sorted_candidates:
@@ -597,18 +739,35 @@ def find_candidate_peaks(
 
         if overlapping_window:
             candidate["validation_passed"] = False
-            candidate["rejection_reason"] = "overlaps selected higher-confidence window"
+            candidate["selected_window"] = False
+            candidate["rejection_reason"] = "duplicate of nearby higher-confidence pitch"
+            rejected_windows.append(dict(candidate))
             continue
 
+        candidate["selected_window"] = True
         selected.append(candidate)
 
     for selected_window in selected:
         selected_window.pop("frame", None)
 
-    return selected, validated_candidates
+    selected = sorted(selected, key=lambda item: item["start_time"])
+    rejected_windows = sorted(
+        rejected_windows,
+        key=lambda item: item.get("candidate_peak_time", 0.0),
+    )
+    return selected, validated_candidates, rejected_windows
 
 
-def write_windows_json(output_path, video_path, fps, total_frames, duration, throwing_hand, windows):
+def write_windows_json(
+    output_path,
+    video_path,
+    fps,
+    total_frames,
+    duration,
+    throwing_hand,
+    windows,
+    rejected_windows,
+):
     """Write detected windows to JSON."""
     report = {
         "video_path": str(video_path),
@@ -617,6 +776,7 @@ def write_windows_json(output_path, video_path, fps, total_frames, duration, thr
         "duration_seconds": duration,
         "throwing_hand": throwing_hand,
         "windows": windows,
+        "rejected_windows": rejected_windows,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8") as f:
@@ -648,7 +808,11 @@ def write_debug_candidates_csv(output_path, candidates):
         "has_rotation_activity",
         "estimated_release_time",
         "estimated_ffs_time",
+        "grouped_candidate_count",
+        "grouped_candidate_peak_times",
+        "grouping_method",
         "validation_passed",
+        "selected_window",
         "rejection_reason",
     ]
     pd.DataFrame(candidates).to_csv(output_path, columns=debug_columns, index=False)
@@ -695,7 +859,7 @@ def main():
     df = extract_pose_landmarks(video_path, fps, total_frames)
     df = add_activity_signals(df, fps, args.throwing_hand)
 
-    windows, validated_candidates = find_candidate_peaks(
+    windows, validated_candidates, rejected_windows = find_candidate_peaks(
         df,
         fps,
         max(1, args.max_windows),
@@ -703,6 +867,7 @@ def main():
         args.throwing_hand,
         args.min_pitch_likeness,
         args.max_overlap_ratio,
+        args.group_gap_seconds,
     )
     for index, window in enumerate(windows, start=1):
         window["window_id"] = index
@@ -716,6 +881,7 @@ def main():
         duration_seconds,
         args.throwing_hand,
         windows,
+        rejected_windows,
     )
 
     if args.debug_candidates:
@@ -731,9 +897,19 @@ def main():
             f"window {window['window_id']}: "
             f"start={window['start_time']:.2f}s "
             f"end={window['end_time']:.2f}s "
-            f"peak={window['candidate_peak_time']:.2f}s "
+            f"ffs={window['estimated_ffs_time']:.2f}s "
+            f"release={window['estimated_release_time']:.2f}s "
             f"pitch_likeness={window['pitch_likeness_score']:.3f} "
-            f"confidence={window['confidence']}"
+            f"grouped_candidates={window.get('grouped_candidate_count', 1)}"
+        )
+
+    print("\nRejected grouped windows:")
+    if not rejected_windows:
+        print("No grouped windows were rejected.")
+    for window in rejected_windows[:12]:
+        print(
+            f"time={window.get('candidate_peak_time', 0.0):.2f}s "
+            f"reason={window.get('rejection_reason', '')}"
         )
 
     rejected_candidates = [
@@ -746,6 +922,23 @@ def main():
         key=lambda item: item["activity_score"],
         reverse=True,
     )
+    duplicate_candidates = [
+        candidate
+        for candidate in rejected_candidates
+        if candidate["rejection_reason"] == "duplicate of nearby higher-confidence pitch"
+    ]
+
+    print("\nRejected duplicate candidates:")
+    if not duplicate_candidates:
+        print("No duplicate pitch candidates were rejected.")
+    for candidate in duplicate_candidates[:12]:
+        print(
+            f"time={candidate['candidate_peak_time']:.2f}s "
+            f"release={candidate['estimated_release_time']:.2f}s "
+            f"pitch_likeness={candidate['pitch_likeness_score']:.3f} "
+            f"reason={candidate['rejection_reason']}"
+        )
+
     print("\nRejected high-activity candidates:")
     if not rejected_candidates:
         print("No high-activity candidates were rejected.")

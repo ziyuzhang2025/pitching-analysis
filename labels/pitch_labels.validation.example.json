@@ -1,0 +1,74 @@
+{
+  "pitches": [
+    {
+      "video_path": "videos/example_pitch_validation.mp4",
+      "pitch_id": "validation_pitch_01",
+      "start_time": 10.0,
+      "end_time": 11.8,
+      "fps": 120,
+      "start_frame": 1200,
+      "end_frame": 1416,
+      "label_source": "manual_streamlit",
+      "front_foot_strike_frame": 1310,
+      "pelvis_peak_frame": 1322,
+      "trunk_peak_frame": 1330,
+      "ball_release_frame": 1338
+    },
+    {
+      "video_path": "videos/example_pitch_validation.mp4",
+      "pitch_id": "validation_pitch_02",
+      "start_time": 20.0,
+      "end_time": 21.8,
+      "fps": 120,
+      "start_frame": 2400,
+      "end_frame": 2616,
+      "label_source": "manual_streamlit",
+      "front_foot_strike_frame": 2512,
+      "pelvis_peak_frame": 2524,
+      "trunk_peak_frame": 2533,
+      "ball_release_frame": 2541
+    },
+    {
+      "video_path": "videos/example_pitch_validation.mp4",
+      "pitch_id": "validation_pitch_03",
+      "start_time": 30.0,
+      "end_time": 31.8,
+      "fps": 120,
+      "start_frame": 3600,
+      "end_frame": 3816,
+      "label_source": "manual_streamlit",
+      "front_foot_strike_frame": 3711,
+      "pelvis_peak_frame": 3723,
+      "trunk_peak_frame": 3731,
+      "ball_release_frame": 3739
+    },
+    {
+      "video_path": "videos/example_pitch_validation.mp4",
+      "pitch_id": "validation_pitch_04",
+      "start_time": 40.0,
+      "end_time": 41.8,
+      "fps": 120,
+      "start_frame": 4800,
+      "end_frame": 5016,
+      "label_source": "manual_streamlit",
+      "front_foot_strike_frame": 4914,
+      "pelvis_peak_frame": 4927,
+      "trunk_peak_frame": 4935,
+      "ball_release_frame": 4943
+    },
+    {
+      "video_path": "videos/example_pitch_validation.mp4",
+      "pitch_id": "validation_pitch_05",
+      "start_time": 50.0,
+      "end_time": 51.8,
+      "fps": 120,
+      "start_frame": 6000,
+      "end_frame": 6216,
+      "label_source": "manual_streamlit",
+      "front_foot_strike_frame": 6113,
+      "pelvis_peak_frame": 6126,
+      "trunk_peak_frame": 6134,
+      "ball_release_frame": 6142
+    }
+  ]
+}

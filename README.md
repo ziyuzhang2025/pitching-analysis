@@ -213,6 +213,54 @@ front foot strike, pelvis peak, trunk peak, and ball release frames, then writes
 Use `labels/pitch_labels.example.json` as a template and replace the example
 frame numbers with manually reviewed labels for your own videos.
 
+## Accuracy Validation Workflow
+
+Use this workflow when adding more manually labeled pitches to check that event
+detection is improving across several examples, not just one clip.
+
+1. Run the Streamlit app and auto-detect pitches:
+
+```bash
+streamlit run app.py
+```
+
+2. Open each pitch tab, visually review the pose overlay, use Manual event
+correction to set the true event frames, then click:
+
+```text
+Save corrected frames as ground-truth label
+```
+
+This writes labels to:
+
+- `labels/pitch_labels.json`
+
+3. Run the accuracy evaluation:
+
+```bash
+python evaluate_pitch_accuracy.py --labels labels/pitch_labels.json --throwing-hand right --output-prefix eval_validation
+```
+
+4. Check the mean absolute frame error for each event in the terminal output and
+in:
+
+- `outputs/pitch_accuracy_evaluation.csv`
+
+Suggested target thresholds:
+
+- FFS: `<= 1` frame average error
+- Pelvis peak: `<= 2` frames average error
+- Trunk peak: `<= 2` frames average error
+- Ball release: `<= 2` frames average error
+
+For 30 fps video, be cautious when interpreting frame-level accuracy because
+one frame is about `33.3 ms`. Higher frame rates, ideally 120-240 fps, make
+manual labels and automatic timing easier to validate.
+
+The file `labels/pitch_labels.validation.example.json` shows the recommended
+format for a larger validation set. It uses placeholder video names and example
+frame numbers, not real personal video data.
+
 ## Sample Result
 
 Example terminal output from a filtered report summary:
