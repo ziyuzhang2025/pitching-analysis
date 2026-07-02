@@ -1,0 +1,171 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1050" viewBox="0 0 1600 1050" role="img" aria-labelledby="title desc">
+  <title id="title">Commercial-Level Local-First Pitching Analysis Architecture</title>
+  <desc id="desc">Architecture diagram showing local video storage, local analysis engine, validation loop, local database, reports, and optional cloud account database.</desc>
+  <defs>
+    <style>
+      .bg { fill: #f7f8fb; }
+      .title { font: 700 42px Arial, Helvetica, sans-serif; fill: #1f2937; }
+      .subtitle { font: 400 22px Arial, Helvetica, sans-serif; fill: #4b5563; }
+      .section-title { font: 700 25px Arial, Helvetica, sans-serif; fill: #111827; }
+      .box-title { font: 700 21px Arial, Helvetica, sans-serif; fill: #111827; }
+      .box-text { font: 400 17px Arial, Helvetica, sans-serif; fill: #374151; }
+      .small { font: 400 15px Arial, Helvetica, sans-serif; fill: #4b5563; }
+      .tiny { font: 400 13px Arial, Helvetica, sans-serif; fill: #6b7280; }
+      .note { font: 700 17px Arial, Helvetica, sans-serif; fill: #7c2d12; }
+      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 16; }
+      .local-panel { fill: #eef8f4; stroke: #73b89a; stroke-width: 3; rx: 18; }
+      .cloud-panel { fill: #eef4ff; stroke: #7aa2e3; stroke-width: 3; rx: 18; }
+      .validation-panel { fill: #fff7ed; stroke: #fb923c; stroke-width: 3; rx: 18; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 2; rx: 10; }
+      .engine { fill: #ecfeff; stroke: #0891b2; stroke-width: 2; rx: 10; }
+      .data { fill: #f8fafc; stroke: #64748b; stroke-width: 2; rx: 10; }
+      .warning { fill: #fff7ed; stroke: #f97316; stroke-width: 2; rx: 10; }
+      .arrow { stroke: #334155; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+      .arrow-soft { stroke: #64748b; stroke-width: 2.5; fill: none; marker-end: url(#arrowheadSoft); stroke-dasharray: 8 7; }
+      .arrow-cloud { stroke: #2563eb; stroke-width: 3; fill: none; marker-end: url(#arrowheadCloud); }
+      .arrow-validation { stroke: #ea580c; stroke-width: 3; fill: none; marker-end: url(#arrowheadValidation); }
+      .pill { fill: #111827; rx: 16; }
+      .pill-text { font: 700 14px Arial, Helvetica, sans-serif; fill: #ffffff; }
+    </style>
+    <marker id="arrowhead" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#334155"/>
+    </marker>
+    <marker id="arrowheadSoft" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#64748b"/>
+    </marker>
+    <marker id="arrowheadCloud" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowheadValidation" markerWidth="12" markerHeight="8" refX="10" refY="4" orient="auto">
+      <path d="M0,0 L12,4 L0,8 Z" fill="#ea580c"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1600" height="1050"/>
+
+  <text class="title" x="80" y="72">Local-First Pitching Analysis Architecture</text>
+  <text class="subtitle" x="80" y="112">Commercial-ready structure with professional-level validation, privacy-first media storage, and optional cloud identity.</text>
+
+  <rect class="local-panel" x="60" y="150" width="930" height="735"/>
+  <text class="section-title" x="95" y="195">User Device: Private Local Analysis</text>
+  <rect class="pill" x="705" y="172" width="230" height="31"/>
+  <text class="pill-text" x="728" y="193">Videos and reports stay local</text>
+
+  <rect class="box" x="95" y="235" width="250" height="115"/>
+  <text class="box-title" x="120" y="270">Video Input</text>
+  <text class="box-text" x="120" y="300">Original pitch videos</text>
+  <text class="box-text" x="120" y="325">FPS / camera metadata</text>
+
+  <rect class="engine" x="410" y="235" width="250" height="115"/>
+  <text class="box-title" x="435" y="270">Pitch Window Detector</text>
+  <text class="box-text" x="435" y="300">Wrist speed + rotation</text>
+  <text class="box-text" x="435" y="325">Grouped pitch windows</text>
+
+  <rect class="engine" x="725" y="235" width="225" height="115"/>
+  <text class="box-title" x="750" y="270">Pose Estimation</text>
+  <text class="box-text" x="750" y="300">OpenCV frames</text>
+  <text class="box-text" x="750" y="325">MediaPipe landmarks</text>
+
+  <rect class="engine" x="95" y="415" width="250" height="145"/>
+  <text class="box-title" x="120" y="450">Event Detection Engine</text>
+  <text class="box-text" x="120" y="480">Front foot strike</text>
+  <text class="box-text" x="120" y="505">Pelvis / trunk peaks</text>
+  <text class="box-text" x="120" y="530">Approx. ball release</text>
+
+  <rect class="engine" x="410" y="415" width="250" height="145"/>
+  <text class="box-title" x="435" y="450">2D Proxy Metrics</text>
+  <text class="box-text" x="435" y="480">Hip-shoulder separation</text>
+  <text class="box-text" x="435" y="505">Arm slot proxy</text>
+  <text class="box-text" x="435" y="530">Arm-trunk offset proxy</text>
+
+  <rect class="warning" x="725" y="415" width="225" height="145"/>
+  <text class="box-title" x="750" y="450">Reliability Layer</text>
+  <text class="box-text" x="750" y="480">Pose quality</text>
+  <text class="box-text" x="750" y="505">Confidence scores</text>
+  <text class="box-text" x="750" y="530">Review warnings</text>
+
+  <rect class="data" x="95" y="625" width="250" height="155"/>
+  <text class="box-title" x="120" y="660">Local SQLite DB</text>
+  <text class="box-text" x="120" y="690">Athletes / sessions</text>
+  <text class="box-text" x="120" y="715">Pitches / events</text>
+  <text class="box-text" x="120" y="740">Manual corrections</text>
+
+  <rect class="data" x="410" y="625" width="250" height="155"/>
+  <text class="box-title" x="435" y="660">Local File Storage</text>
+  <text class="box-text" x="435" y="690">Overlay videos</text>
+  <text class="box-text" x="435" y="715">Plots / CSV / JSON</text>
+  <text class="box-text" x="435" y="740">Markdown/PDF reports</text>
+
+  <rect class="box" x="725" y="625" width="225" height="155"/>
+  <text class="box-title" x="750" y="660">App UI</text>
+  <text class="box-text" x="750" y="690">Review pitches</text>
+  <text class="box-text" x="750" y="715">Correct key frames</text>
+  <text class="box-text" x="750" y="740">Export session report</text>
+
+  <path class="arrow" d="M345 292 C370 292, 385 292, 410 292"/>
+  <path class="arrow" d="M660 292 C685 292, 700 292, 725 292"/>
+  <path class="arrow" d="M837 350 C837 375, 837 390, 837 415"/>
+  <path class="arrow" d="M725 488 C700 488, 685 488, 660 488"/>
+  <path class="arrow" d="M410 488 C385 488, 370 488, 345 488"/>
+  <path class="arrow" d="M220 560 C220 585, 220 600, 220 625"/>
+  <path class="arrow" d="M535 560 C535 585, 535 600, 535 625"/>
+  <path class="arrow" d="M660 702 C685 702, 700 702, 725 702"/>
+  <path class="arrow-soft" d="M725 742 C610 820, 300 825, 220 780"/>
+
+  <rect class="cloud-panel" x="1040" y="150" width="500" height="410"/>
+  <text class="section-title" x="1075" y="195">Cloud: Account and Business Layer</text>
+  <rect class="pill" x="1275" y="172" width="220" height="31"/>
+  <text class="pill-text" x="1298" y="193">No raw video by default</text>
+
+  <rect class="box" x="1080" y="235" width="190" height="115"/>
+  <text class="box-title" x="1105" y="270">Auth API</text>
+  <text class="box-text" x="1105" y="300">Login / signup</text>
+  <text class="box-text" x="1105" y="325">Device licensing</text>
+
+  <rect class="data" x="1310" y="235" width="190" height="115"/>
+  <text class="box-title" x="1335" y="270">User Database</text>
+  <text class="box-text" x="1335" y="300">Password hashes</text>
+  <text class="box-text" x="1335" y="325">Subscription state</text>
+
+  <rect class="data" x="1080" y="405" width="190" height="115"/>
+  <text class="box-title" x="1105" y="440">Metadata Sync</text>
+  <text class="box-text" x="1105" y="470">Session summaries</text>
+  <text class="box-text" x="1105" y="495">Settings / versions</text>
+
+  <rect class="box" x="1310" y="405" width="190" height="115"/>
+  <text class="box-title" x="1335" y="440">Admin / Billing</text>
+  <text class="box-text" x="1335" y="470">Plans / invoices</text>
+  <text class="box-text" x="1335" y="495">Team access later</text>
+
+  <path class="arrow-cloud" d="M1270 292 C1285 292, 1295 292, 1310 292"/>
+  <path class="arrow-cloud" d="M1175 350 C1175 375, 1175 390, 1175 405"/>
+  <path class="arrow-cloud" d="M1270 462 C1285 462, 1295 462, 1310 462"/>
+  <path class="arrow-cloud" d="M950 702 C1030 650, 1060 550, 1080 462"/>
+  <text class="small" x="1002" y="650">optional metadata sync</text>
+
+  <rect class="validation-panel" x="1040" y="610" width="500" height="275"/>
+  <text class="section-title" x="1075" y="655">Professional Accuracy / Validation Loop</text>
+
+  <rect class="box" x="1080" y="695" width="190" height="125"/>
+  <text class="box-title" x="1105" y="730">Ground Truth Labels</text>
+  <text class="box-text" x="1105" y="760">Manual event frames</text>
+  <text class="box-text" x="1105" y="785">Reviewer/version info</text>
+
+  <rect class="box" x="1310" y="695" width="190" height="125"/>
+  <text class="box-title" x="1335" y="730">Accuracy Reports</text>
+  <text class="box-text" x="1335" y="760">Mean/median error</text>
+  <text class="box-text" x="1335" y="785">Within 1/3/5 frames</text>
+
+  <path class="arrow-validation" d="M950 702 C990 718, 1035 745, 1080 758"/>
+  <path class="arrow-validation" d="M1270 758 C1285 758, 1295 758, 1310 758"/>
+  <path class="arrow-validation" d="M1310 805 C1210 870, 1015 866, 925 780"/>
+  <text class="small" x="1068" y="867">validation improves thresholds, warnings, and detector logic</text>
+
+  <rect class="panel" x="60" y="920" width="1480" height="85"/>
+  <text class="note" x="95" y="955">Notation:</text>
+  <text class="small" x="185" y="955">Solid arrows = local analysis data flow</text>
+  <text class="small" x="495" y="955">Dashed arrow = human review / manual correction</text>
+  <text class="small" x="875" y="955">Blue arrows = optional cloud account metadata</text>
+  <text class="small" x="1240" y="955">Orange arrows = validation feedback loop</text>
+  <text class="tiny" x="95" y="985">Professional-level accuracy comes from labeled validation, confidence scoring, and capture standards. This remains a 2D video review aid, not true 3D biomechanics or elbow-force estimation.</text>
+</svg>

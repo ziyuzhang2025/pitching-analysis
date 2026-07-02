@@ -261,6 +261,52 @@ The file `labels/pitch_labels.validation.example.json` shows the recommended
 format for a larger validation set. It uses placeholder video names and example
 frame numbers, not real personal video data.
 
+## Reliability and Robustness Harnesses
+
+Three local-only harness scripts help assess output quality without changing the
+event detector itself.
+
+Generate a pose reliability report and a prioritized visual review queue from
+existing analyzer outputs:
+
+```bash
+python pose_reliability_harness.py --outputs-dir outputs --output-prefix session_quality
+```
+
+This writes a full reliability CSV, a review-queue CSV, and a JSON summary. The
+queue highlights low-confidence events, low visibility, low frame rate, and
+events near their search-window boundaries.
+
+Stress-test one existing landmark sequence by injecting controlled normalized
+coordinate jitter and temporary landmark dropout in memory:
+
+```bash
+python robustness_stress_harness.py \
+  --landmarks outputs/example_landmarks.csv \
+  --timing-report outputs/example_timing_report.json \
+  --throwing-hand right \
+  --output-prefix example_stress
+```
+
+The stress harness does not overwrite the source CSV or JSON. It reports how
+many frames each automatically re-detected event shifts under each artificial
+noise condition. This is a robustness test, not a replacement for comparison
+against manually labeled ground truth.
+
+Generate a conservative Markdown research report from accuracy, reliability,
+and optional stress-test artifacts:
+
+```bash
+python generate_research_report.py \
+  --accuracy-csv outputs/pitch_accuracy_evaluation.csv \
+  --reliability-csv outputs/session_quality_pose_reliability.csv \
+  --stress-summary-json outputs/example_stress_summary.json \
+  --output-prefix pitching_research_report
+```
+
+The report summarizes event error, review risks, and noise sensitivity while
+keeping all conclusions within the limits of single-camera 2D pose analysis.
+
 ## Sample Result
 
 Example terminal output from a filtered report summary:
