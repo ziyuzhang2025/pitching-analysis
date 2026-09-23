@@ -1,0 +1,92 @@
+{
+  "source": "OpenBiomechanics Project (CC BY-NC-SA 4.0); research/obp_simulation.py",
+  "inputs": [
+    "outputs/rq2/rq2_noise.shard0-of-6.csv",
+    "outputs/rq2/rq2_noise.shard1-of-6.csv",
+    "outputs/rq2/rq2_noise.shard2-of-6.csv",
+    "outputs/rq2/rq2_noise.shard3-of-6.csv",
+    "outputs/rq2/rq2_noise.shard4-of-6.csv",
+    "outputs/rq2/rq2_noise.shard5-of-6.csv"
+  ],
+  "n_rows": 14472,
+  "failed_rows": 0,
+  "n_pitches": 402,
+  "n_athletes": 100,
+  "conditions": {
+    "azimuth_deg": [
+      60.0,
+      90.0
+    ],
+    "fps": [
+      60.0,
+      240.0
+    ],
+    "noise_body_frac": [
+      0.001,
+      0.003,
+      0.01
+    ]
+  },
+  "ci_method": "95% percentile bootstrap resampling athletes, 500 resamples",
+  "true_pelvis_to_trunk_gap_ms": {
+    "median": 8.3,
+    "q25": 0.0,
+    "q75": 13.9,
+    "share_below_one_frame_30fps_pct": 91.5,
+    "share_negative_pct": 20.6
+  },
+  "side_view_by_fps": {
+    "60": {
+      "ffs_err_ms": null,
+      "br_err_ms": null,
+      "pelvis_onset_err_ms": null,
+      "pelvis_peakvel_err_ms": null,
+      "oracle_pelvis_onset_err_ms": null,
+      "oracle_pelvis_peakvel_err_ms": null,
+      "top_pelvis_err_ms": null,
+      "trunk_err_ms": null,
+      "oracle_trunk_err_ms": null,
+      "top_trunk_err_ms": null,
+      "oracle_br_err_ms": null,
+      "order_ok_current_rule": null,
+      "order_ok_peakvel": null,
+      "order_ok_oracle_peakvel": null,
+      "order_ok_top": null
+    },
+    "240": {
+      "ffs_err_ms": null,
+      "br_err_ms": null,
+      "pelvis_onset_err_ms": null,
+      "pelvis_peakvel_err_ms": null,
+      "oracle_pelvis_onset_err_ms": null,
+      "oracle_pelvis_peakvel_err_ms": null,
+      "top_pelvis_err_ms": null,
+      "trunk_err_ms": null,
+      "oracle_trunk_err_ms": null,
+      "top_trunk_err_ms": null,
+      "oracle_br_err_ms": null,
+      "order_ok_current_rule": null,
+      "order_ok_peakvel": null,
+      "order_ok_oracle_peakvel": null,
+      "order_ok_top": null
+    }
+  },
+  "by_azimuth_at_240fps": {
+    "60": {
+      "ffs_err_ms": null,
+      "br_err_ms": null,
+      "oracle_pelvis_onset_err_ms": null,
+      "oracle_pelvis_peakvel_err_ms": null,
+      "top_pelvis_err_ms": null,
+      "oracle_trunk_err_ms": null
+    },
+    "90": {
+      "ffs_err_ms": null,
+      "br_err_ms": null,
+      "oracle_pelvis_onset_err_ms": null,
+      "oracle_pelvis_peakvel_err_ms": null,
+      "top_pelvis_err_ms": null,
+      "oracle_trunk_err_ms": null
+    }
+  }
+}
