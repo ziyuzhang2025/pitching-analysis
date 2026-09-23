@@ -1,0 +1,60 @@
+name: backend
+
+on:
+  push:
+    paths: ["backend/**", "analyze_pitch_timing.py", ".github/workflows/backend.yml"]
+  pull_request:
+    paths: ["backend/**", "analyze_pitch_timing.py", ".github/workflows/backend.yml"]
+
+defaults:
+  run:
+    working-directory: backend
+
+jobs:
+  checks:
+    name: lint, types, tests (required)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: pitchlab, POSTGRES_PASSWORD: pitchlab, POSTGRES_DB: pitchlab}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pitchlab" --health-interval 2s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip, cache-dependency-path: backend/requirements-dev.txt}
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: mypy
+      - name: tests (excluding exercises)
+        run: pytest -m "not ziyu" --cov --cov-report=term-missing
+
+  exercises:
+    name: exercises progress (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: pitchlab, POSTGRES_PASSWORD: pitchlab, POSTGRES_DB: pitchlab}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pitchlab" --health-interval 2s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 2s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.11", cache: pip, cache-dependency-path: backend/requirements-dev.txt}
+      - run: pip install -r requirements-dev.txt
+      - run: python scripts/progress.py

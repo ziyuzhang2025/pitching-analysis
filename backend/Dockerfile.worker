@@ -1,0 +1,31 @@
+# Build from the REPOSITORY ROOT. The default image uses the fake analyzer (fast,
+# no MediaPipe). Build with --build-arg INSTALL_ANALYZER=true to run the real one.
+FROM python:3.11-slim
+
+ARG INSTALL_ANALYZER=false
+# mediapipe 0.10.21 (the Mac research version) has no linux/aarch64 wheel; 0.10.18
+# does (checked 2026-09-23). Results from this image are NOT comparable with the
+# Mac-native research numbers - see docs/RESEARCH_GUIDE.md, Phase 8.6.
+ARG MEDIAPIPE_VERSION=0.10.18
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
+WORKDIR /repo/backend
+
+COPY backend/requirements.txt ./requirements.txt
+RUN pip install -r requirements.txt
+
+RUN if [ "$INSTALL_ANALYZER" = "true" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+      && rm -rf /var/lib/apt/lists/* \
+      && pip install opencv-python-headless numpy pandas matplotlib \
+         "mediapipe==${MEDIAPIPE_VERSION}"; \
+    fi
+
+COPY analyze_pitch_timing.py auto_detect_pitch_windows.py /repo/
+COPY backend/ /repo/backend/
+
+RUN useradd --uid 10001 --create-home app \
+    && mkdir -p /data/storage && chown app:app /data/storage
+USER app
+
+CMD ["python", "-m", "worker.run"]

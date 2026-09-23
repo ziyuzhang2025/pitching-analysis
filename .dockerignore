@@ -1,0 +1,18 @@
+# Keep large/private files out of Docker build contexts.
+.git
+.venv
+venv
+**/__pycache__
+videos
+outputs
+data
+labels/pitch_labels.json
+labels/pitch_labels_v2.json
+paper
+research
+backend/storage
+backend/.env
+*.mp4
+*.MP4
+*.mov
+*.MOV
