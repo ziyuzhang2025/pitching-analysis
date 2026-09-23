@@ -16,3 +16,4 @@ videos/
 *.mkv
 labels/pitch_labels.json
 labels/pitch_labels_v2.json
+data/external/
