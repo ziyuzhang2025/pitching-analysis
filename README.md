@@ -515,15 +515,90 @@ spacing, so the overlay should be reviewed visually.
 - Does not calculate elbow force
 - Does not calculate layback yet
 - Ball release detection is approximate and based on wrist speed only
-- Not using OpenBiomechanics/Driveline reference data yet
+- OpenBiomechanics reference data is used only in the lab-data simulation, not for live comparison
 
 This is a first-pass timing tool, not a validated biomechanics model.
 
+## Research: Validation Study (in progress)
+
+The project is being turned into a validation study of what a single phone
+camera can and cannot measure. The plan, rules, and status live in
+`docs/RESEARCH_GUIDE.md`.
+
+### Labels schema v2 and evaluation options
+
+`pitch_labels.py` reads schema v1 (the original format) and schema v2 (per-pitch
+pitcher, throwing hand, camera view, dev/test split, and multiple annotators).
+Convert existing labels without changing any frame:
+
+```bash
+python tools/migrate_labels_v1_to_v2.py labels/pitch_labels.json labels/pitch_labels_v2.json \
+  --pitcher-id P01 --throwing-hand right --split dev --annotation-key A1_anchored
+```
+
+The evaluator now gives every pitch a unique output prefix (video name + pitch
+id) and accepts:
+
+```bash
+python evaluate_pitch_accuracy.py --labels labels/pitch_labels_v2.json \
+  --split dev --annotation A1_anchored --output-csv outputs/eval_dev.csv
+```
+
+Assign each new pitcher to `dev` or `test` in `labels/splits.json` **before**
+labeling. Tune only on dev.
+
+### Detector version and environment
+
+Every timing report now includes `detector_version`, the library versions
+(`environment`), and diagnostic fields `pelvis_rotation_onset_frame` (the rule
+behind `pelvis_peak_frame`) and `pelvis_peak_velocity_frame` (the true maximum).
+Different MediaPipe builds give different frames on the same video, so
+official numbers are produced on the Mac environment:
+
+```bash
+bash scripts/mac_baseline.sh
+```
+
+### Tests
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q tests
+```
+
+### Lab-data simulation (OpenBiomechanics)
+
+Uses 402 lab-captured pitches from 100 athletes (OpenBiomechanics Project,
+CC BY-NC-SA 4.0, non-commercial) to test the detector against lab ground truth.
+3D joint centers are projected into a virtual camera and resampled to phone
+frame rates, then passed through the same event functions:
+
+```bash
+./scripts/download_obp.sh
+for k in 0 1 2; do python research/obp_simulation.py --workers 4 \
+  --output outputs/rq2/rq2_main.csv --shard $k --num-shards 3; done
+python research/obp_summary.py
+```
+
+Key results (details and CIs: `research/results/RQ2_FINDINGS.md`):
+
+| Side view, 240 fps (median abs. error) | ms |
+| --- | --- |
+| Front foot strike | 16.1 |
+| Ball release | 15.5 |
+| Pelvis peak, 2D image-plane proxy (true peak) | 26.9 |
+| Pelvis peak, ideal ground-plane (pseudo-3D) angle | 2.7 |
+
+- The 2D pelvis proxy does not improve with frame rate. A ground-plane angle does.
+- Pelvis-before-trunk order cannot be recovered from a single camera.
+- Camera position matters more than frame rate: about 60–90° from behind works;
+  directly behind/in front breaks foot-strike detection.
+
+Figures: `paper/figs/rq2_*.png`.
+
 ## Future Work
 
-- More accurate ball release detection
-- Layback angle
-- Hip-shoulder separation
-- Better front foot strike auto detection
-- Multi-angle video support
-- Comparison against reference biomechanics data
+- Blind, multi-annotator labels on new 240 fps footage from several pitchers
+- Frame-rate-independent smoothing and thresholds (detector 1.1)
+- Pseudo-3D rotation from MediaPipe world landmarks
+- Two-camera 3D reconstruction

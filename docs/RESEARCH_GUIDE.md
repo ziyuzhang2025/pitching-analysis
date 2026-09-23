@@ -1,5 +1,7 @@
 # PitchTiming Research Guide (agent-facing)
 
+> **Status (2026-09-23): Phase 0 code done (not yet frozen); Phase 4 done.** See Section 13 before starting work.
+
 > **Purpose of this file.** This is the operating manual for any AI agent (Claude, Codex, etc.) or human working on this repository. Its goal is to turn the existing single-camera pitching timing MVP into a **validated, research-grade portfolio piece** (a short paper, a reproducible repo, a demo). Load this whole file into context before doing any work. It was written and fact-checked on **2026-09-23**. Section 11 lists what was verified and how.
 >
 > **Owner:** Ziyu (SMU Information Systems undergraduate). The career goal is a master's and later a job in sports performance technology / biomechanics ("using technology to push human performance"), connected to baseball. SWE and data skills are the fallback and the entry ticket.
@@ -490,3 +492,36 @@ print(r.groupby("fps")[["side_order_ok", "top_order_ok"]].mean().round(2))
 ```
 
 BR-bias pilot: for each pitch, compute the 3D speed of `wrist_jc` and `hand_jc` (gradient over `time`), find the peak time within [`fp_10_time`, `BR_time` + 0.1 s], and subtract `BR_time`. Result: median −13.9 ms (wrist) and −8.4 ms (hand).
+
+---
+
+## 13. Status log
+
+### 2026-09-23: Phase 0 (code) and Phase 4 complete. Branch `research/phase0-phase4`, not pushed.
+
+**Done**
+- `pitch_labels.py` (schema v1/v2 loader), `tools/migrate_labels_v1_to_v2.py`, `labels/splits.json` (P01 = dev), local `labels/pitch_labels_v2.json` (git-ignored; the existing 10 labels stored under annotation key `A1_anchored`)
+- Evaluator: unique `pitch_uid` prefixes (fixes the collision), per-pitch hand, `--split`, `--annotation`, `--output-csv`, new columns appended
+- Analyzer: `DETECTOR_VERSION = "1.0.0"`, `pelvis_rotation_onset_frame`, `pelvis_peak_velocity_frame`, definition strings, `environment`. Selected events are unchanged (timing reports diffed before/after).
+- `tests/` (20 pytest tests, passing in the Linux VM), `requirements-dev.txt`
+- `scripts/mac_baseline.sh`: official Mac baseline plus a comparison with the June numbers
+- Phase 4: `scripts/download_obp.sh`, `research/obp_simulation.py` (sharded), `research/obp_summary.py`, results in `research/results/` (see `RQ2_FINDINGS.md`), figures in `paper/figs/`. Sanity check 4.8 passed: the side-view 2D true-peak pelvis error of 26.9 ms at 240 fps is consistent with the pilot's 27.5 ms.
+- Removed a stale, empty `.git/HEAD.lock` dated 2026-07-02 (no git process was running).
+
+**Waiting on Ziyu**
+1. Run `bash scripts/mac_baseline.sh` on the Mac. If it prints ALL MATCH, tag `detector-v1.0` and merge the branch.
+2. Data collection (Phase 1) and annotation (Phase 2).
+
+**New findings that change the plan**
+- The smoothing window (5 frames) and the FFS ankle thresholds are per-frame, so their behavior changes with fps. At 240 fps, FFS error rises from 16 to 58 ms with 0.3%-body-height landmark noise. Detector 1.1 should define windows in ms. Develop this on the **dev** set plus the OBP simulation, never on test.
+- The current pelvis "onset" rule reports pelvis-first in 92.8% of pitches (lab truth: 68.9%). Sequence classification must not be reported.
+- Best single-camera placement is about 60–90° from behind (Section 3 of `RQ2_FINDINGS.md`). **Change Phase 1 views to `arm_side` (90°) plus a rear-oblique of about 60°**, not directly behind.
+- FFS and BR have about +15 ms systematic late bias at the side view. Estimate the correction on dev only.
+- Orthographic projection makes θ and θ+180° identical. Occlusion is not modeled.
+
+**Next automatable steps**
+- Phase 3 code: fps decimation, baselines, clustered bootstrap, Bland–Altman, ICC; test with synthetic labels
+- Blind labeling tool (Phase 2.1)
+- Phase 5: `--save-world-landmarks`, then the ground-plane proxy on real video
+- Detector 1.1 candidate (ms-based windows) evaluated on OBP plus dev
+- Paper skeleton with the RQ2 section written
