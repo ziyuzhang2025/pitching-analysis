@@ -1,0 +1,6 @@
+{
+  "pitchers": {
+    "P01": "dev"
+  },
+  "notes": "Assign each new pitcher to dev or test BEFORE labeling their clips, then commit. P01 = the pitcher in test_pitch_01/02 (existing 10 labels, used for tuning, so dev). See docs/RESEARCH_GUIDE.md Phase 0.4."
+}

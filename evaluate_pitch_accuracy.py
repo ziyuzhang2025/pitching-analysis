@@ -17,6 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from pitch_labels import load_label_file, safe_token
+
 
 OUTPUTS_DIR = Path("outputs")
 EVALUATION_CSV_PATH = OUTPUTS_DIR / "pitch_accuracy_evaluation.csv"
@@ -60,33 +62,37 @@ def parse_args():
         default="eval_accuracy",
         help="Prefix for per-pitch analyzer outputs.",
     )
+    parser.add_argument(
+        "--annotation",
+        default=None,
+        help="Schema v2 only: annotation key to evaluate against (default: each pitch's 'reference').",
+    )
+    parser.add_argument(
+        "--split",
+        choices=["dev", "test"],
+        default=None,
+        help="Schema v2 only: evaluate only pitches in this split.",
+    )
+    parser.add_argument(
+        "--output-csv",
+        default=None,
+        help="Optional CSV path (default: outputs/pitch_accuracy_evaluation.csv).",
+    )
     return parser.parse_args()
 
 
-def load_labels(labels_path):
-    """Load labels JSON and return a list of pitch dictionaries."""
-    with Path(labels_path).open("r", encoding="utf-8") as f:
-        data = json.load(f)
-
-    if isinstance(data, list):
-        pitches = data
-    else:
-        pitches = data.get("pitches", [])
-
-    if not pitches:
-        raise ValueError(f"No labeled pitches found in {labels_path}")
-
-    return pitches
+def load_labels(labels_path, annotation_key=None, split=None):
+    """Load labels (schema v1 or v2) as normalized pitch dictionaries."""
+    return load_label_file(labels_path, annotation_key=annotation_key, split=split)
 
 
 def pitch_output_prefix(base_prefix, pitch):
-    """Build a stable output prefix for one evaluated pitch."""
-    pitch_id = str(pitch.get("pitch_id", "pitch")).strip() or "pitch"
-    safe_pitch_id = "".join(
-        character if character.isalnum() or character in "-_" else "_"
-        for character in pitch_id
-    )
-    return f"{base_prefix}_{safe_pitch_id}"
+    """Build a unique output prefix per pitch (video stem + pitch id).
+
+    Earlier versions used only pitch_id, so pitches named window_1 in two
+    different videos overwrote each other's artifacts.
+    """
+    return f"{base_prefix}_{safe_token(pitch.get('pitch_uid'))}"
 
 
 def run_analyzer_for_pitch(pitch, throwing_hand, output_prefix):
@@ -195,7 +201,8 @@ def print_pitch_debug(pitch, report):
 def evaluate_pitch(pitch, throwing_hand, base_output_prefix):
     """Run one pitch and return a CSV-ready evaluation row."""
     output_prefix = pitch_output_prefix(base_output_prefix, pitch)
-    run_analyzer_for_pitch(pitch, throwing_hand, output_prefix)
+    pitch_hand = pitch.get("throwing_hand") or throwing_hand
+    run_analyzer_for_pitch(pitch, pitch_hand, output_prefix)
     report = load_timing_report(output_prefix)
     fps = report.get("fps")
     start_frame = pitch.get("start_frame")
@@ -216,6 +223,14 @@ def evaluate_pitch(pitch, throwing_hand, base_output_prefix):
         "label_source": pitch.get("label_source"),
         "output_prefix": output_prefix,
         "fps": fps,
+        "pitch_uid": pitch.get("pitch_uid"),
+        "video_stem": Path(str(pitch.get("video_path", ""))).stem,
+        "pitcher_id": pitch.get("pitcher_id"),
+        "throwing_hand": pitch_hand,
+        "view": pitch.get("view"),
+        "split": pitch.get("split"),
+        "annotation_key": pitch.get("annotation_key"),
+        "detector_version": report.get("detector_version"),
     }
 
     for event_field in EVENT_FIELDS:
@@ -255,13 +270,27 @@ def csv_fields():
                 f"{event_name}_absolute_frame_error",
             ]
         )
+    # New columns are appended so existing column positions stay unchanged.
+    fields.extend(
+        [
+            "pitch_uid",
+            "video_stem",
+            "pitcher_id",
+            "throwing_hand",
+            "view",
+            "split",
+            "annotation_key",
+            "detector_version",
+        ]
+    )
     return fields
 
 
-def write_evaluation_csv(rows):
-    """Save evaluation rows to outputs/pitch_accuracy_evaluation.csv."""
-    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
-    with EVALUATION_CSV_PATH.open("w", newline="", encoding="utf-8") as f:
+def write_evaluation_csv(rows, csv_path=EVALUATION_CSV_PATH):
+    """Save evaluation rows (default: outputs/pitch_accuracy_evaluation.csv)."""
+    csv_path = Path(csv_path)
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=csv_fields())
         writer.writeheader()
         writer.writerows(rows)
@@ -302,24 +331,25 @@ def print_event_summary(rows, event_field):
     print(f"  within 5 frames: {percentage_within(errors, 5):.1f}%")
 
 
-def print_summary(rows):
+def print_summary(rows, csv_path=EVALUATION_CSV_PATH):
     """Print aggregate accuracy summary."""
     print(f"\nPitches evaluated: {len(rows)}")
     for event_field in EVENT_FIELDS:
         print_event_summary(rows, event_field)
-    print(f"\nSaved evaluation CSV: {EVALUATION_CSV_PATH}")
+    print(f"\nSaved evaluation CSV: {csv_path}")
 
 
 def main():
     """CLI entry point."""
     args = parse_args()
-    pitches = load_labels(args.labels)
+    pitches = load_labels(args.labels, annotation_key=args.annotation, split=args.split)
     rows = [
         evaluate_pitch(pitch, args.throwing_hand, args.output_prefix)
         for pitch in pitches
     ]
-    write_evaluation_csv(rows)
-    print_summary(rows)
+    csv_path = Path(args.output_csv) if args.output_csv else EVALUATION_CSV_PATH
+    write_evaluation_csv(rows, csv_path)
+    print_summary(rows, csv_path)
 
 
 if __name__ == "__main__":
