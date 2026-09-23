@@ -16,6 +16,8 @@ No cloud API is used. No API key is required.
 import argparse
 import json
 import math
+import platform
+import sys
 from pathlib import Path
 
 import cv2
@@ -28,6 +30,10 @@ import mediapipe as mp
 import numpy as np
 import pandas as pd
 
+
+# Bump when any event-detection rule or threshold changes. Tag the commit
+# detector-v<version> and re-run the dev-set evaluation (docs/RESEARCH_GUIDE.md).
+DETECTOR_VERSION = "1.0.0"
 
 LANDMARK_NAMES = [
     "left_shoulder",
@@ -1813,6 +1819,17 @@ def build_timing_report(
     else:
         pelvis_peak_debug_reason = auto_pelvis_peak["reason"]
 
+    # Diagnostic only: the selected pelvis event above is the ONSET of a strong
+    # rotation burst, while the trunk event is the true max |angular velocity|.
+    # Report the pelvis true peak separately so the two definitions can be
+    # compared. This does not change any selected event.
+    auto_pelvis_peak_velocity_frame = peak_in_frame_window(
+        df,
+        "hip_angular_velocity",
+        pelvis_search_start_frame,
+        pelvis_search_end_frame,
+    )
+
     auto_trunk_peak_frame = peak_in_frame_window(
         df,
         "shoulder_angular_velocity",
@@ -2326,6 +2343,35 @@ def build_timing_report(
             "sequence_confidence_note"
         ],
         "landmark_detection_rate": landmark_detection_rate,
+        "detector_version": DETECTOR_VERSION,
+        "pelvis_peak_definition": (
+            "onset: first rising frame with |hip-line angular velocity| >= "
+            "max(120 deg/s, 25% of window max); see pelvis_peak_velocity_frame "
+            "for the true max"
+        ),
+        "trunk_peak_definition": "max |shoulder-line angular velocity| in search window",
+        "pelvis_rotation_onset_frame": auto_pelvis_peak_frame,
+        "pelvis_peak_velocity_frame": auto_pelvis_peak_velocity_frame,
+        "pelvis_peak_velocity_time": frame_to_time(auto_pelvis_peak_velocity_frame, fps),
+        "pelvis_peak_velocity_to_trunk_peak_ms": milliseconds_between(
+            trunk_peak_frame,
+            auto_pelvis_peak_velocity_frame,
+            fps,
+        ),
+        "environment": runtime_environment(),
+    }
+
+
+def runtime_environment():
+    """Return library/platform versions; results differ across MediaPipe builds."""
+    return {
+        "python": platform.python_version(),
+        "platform": f"{platform.system()} {platform.machine()}",
+        "mediapipe": getattr(mp, "__version__", "unknown"),
+        "opencv": cv2.__version__,
+        "numpy": np.__version__,
+        "pandas": pd.__version__,
+        "argv": sys.argv[1:],
     }
 
 
