@@ -1,6 +1,6 @@
 # PitchTiming Research Guide (agent-facing)
 
-> **Status (2026-09-23): Phase 0 code done (not yet frozen); Phase 4 done; Phase 8 (backend) specified, not started.** See Section 13 before starting work.
+> **Status (2026-09-23): Phase 0 code done (not yet frozen); Phase 4 done; Phase 8 scaffold done, exercises waiting for Ziyu.** See Section 13 before starting work.
 
 > **Purpose of this file.** This is the operating manual for any AI agent (Claude, Codex, etc.) or human working on this repository. Its goal is to turn the existing single-camera pitching timing MVP into a **validated, research-grade portfolio piece** (a short paper, a reproducible repo, a demo). Load this whole file into context before doing any work. It was written and fact-checked on **2026-09-23**. Section 11 lists what was verified and how.
 >
@@ -360,7 +360,9 @@ The deliverable is Ziyu's skill, not only the code. Split the work:
 | Owner | Work |
 |---|---|
 | **Agent** | Project skeleton, Dockerfiles, `docker-compose.yml`, CI workflow, config/settings module, logging setup, test fixtures, *one* fully worked example endpoint plus its tests (as a pattern to copy), the load-test harness, code review of Ziyu's work |
-| **Ziyu writes** | SQLAlchemy models and the first Alembic migration (8.2); the athletes/sessions/videos endpoints (8.3); the job state machine and retry logic (8.4); the idempotency check (8.5); the tests for everything he wrote; all ADRs (8.8), in his own words |
+| **Ziyu writes** | The seven exercises in `docs/backend_exercises.md`: models + migration 0002; the state machine + retry policy; the sessions/upload endpoints; idempotency (service + `/analyze`); the worker task + jobs API; the reaper; results + backfill. Also all ADRs (8.8), in his own words. |
+
+*As built (2026-09-23):* the `Athlete` model, migration 0001, and `/athletes` became the agent's fully worked example; `sessions`/`videos` onward are Ziyu's. Specs are the docstrings in each target file. The exercise tests are in `backend/tests/exercises/` (72 tests, pytest marker `ziyu`), and `python scripts/progress.py` shows the checklist. The tests were validated against a private reference implementation (all pass), which is shared with Ziyu only after he finishes (§8.0).
 
 Rules:
 - For Ziyu-owned items, the agent creates the file with a docstring spec, type signatures, and failing tests marked `# TODO(ziyu)`. Explain concepts and review diffs, but **do not write the implementation** unless Ziyu explicitly says "write it for me" for that specific item. If he does, record it in `docs/backend_ownership.md`, so it is clear which parts he wrote.
@@ -668,3 +670,22 @@ BR-bias pilot: for each pitch, compute the 3D speed of `wrist_jc` and `hand_jc` 
 
 - Ziyu wants to be able to do backend SWE work and show it. Chosen scope: **core backend, local-only** (no auth, no cloud deployment).
 - Teaching mode is mandatory (Section 5, Phase 8.0, and rule 10). Next step: the agent scaffolds `backend/`, creates the Ziyu-owned files as specs with failing tests, and walks him through 8.2 (data model) first.
+
+### 2026-09-23: Phase 8 scaffold built (commit fa2cf97 on `research/phase0-phase4`)
+
+**Done (agent-owned per 8.0)**
+- `backend/`: FastAPI app factory, settings, DB session, JSON logs with `X-Request-ID` (carried into worker logs via RQ job meta), the error shape, cursor pagination, streaming upload storage (sha256 while streaming, size limit, atomic rename), the RQ queue with delayed retries (scheduler), and analyzer adapters (`FakeAnalyzer`: fails on content starting with `FORCE_FAIL`; `RealAnalyzer`: runs the repo scripts in a temp dir). Also `worker/run.py` (scheduler + reaper thread), the `Athlete` worked example + migration 0001, and `/health` + `/version`.
+- Docker: `Dockerfile.api`, `Dockerfile.worker` (optional real analyzer, mediapipe 0.10.18 on arm64), `docker-compose.yml` (postgres, redis, a one-shot migrate service, api, worker), and a repo-root `.dockerignore` (keeps videos/outputs out).
+- CI: `.github/workflows/backend.yml` (ruff + mypy + non-exercise tests with coverage required; exercise progress informational).
+- Load test: `loadtest/locustfile.py` (custom "JOB end_to_end" metric) and `loadtest/run_scaling.py` (compose or local mode, 1/2/4 workers, drains the backlog between runs, writes `summary.md`).
+- Docs: `backend/README.md`, `docs/backend_exercises.md`, `docs/backend_ownership.md`, `docs/adr/`.
+
+**Verified**
+- In the cloud (Python 3.11, Postgres 16, Redis 7): ruff and mypy clean; 26 non-exercise tests pass (85% coverage); all 72 exercise tests fail on the stubs and pass on the reference.
+- The race tests passed 6/6 runs on the reference, and a naive version without `IntegrityError` handling fails them 3/3.
+- End to end with real uvicorn plus an RQ worker: the success path works, and a forced-failure job retried with backoff and ended `failed` after 3 attempts.
+- Local load-test smoke run on the reference (2 CPUs, 1 s fake analysis): 39 jobs/min with 1 worker, 75 with 2. This only proves the harness works; it is **not** a portfolio number.
+- On Ziyu's machine (Linux VM, Python 3.10): ruff, mypy, and the pure unit tests pass, and the app imports. The core `tests/` still pass (20).
+- **Not verified:** Docker images were not built (Docker Hub is blocked from the agent's environment; only `docker compose config` was validated), and GitHub Actions has not run (nothing pushed). The first `docker compose up --build` on the Mac is the real test.
+
+**Next (Ziyu):** install Docker Desktop, run `cd backend && docker compose up --build`, then start Exercise 1.
