@@ -1,6 +1,6 @@
 # PitchTiming Research Guide (agent-facing)
 
-> **Status (2026-09-23): Phase 0 code done (not yet frozen); Phase 4 done.** See Section 13 before starting work.
+> **Status (2026-09-23): Phase 0 code done (not yet frozen); Phase 4 done; Phase 8 (backend) specified, not started.** See Section 13 before starting work.
 
 > **Purpose of this file.** This is the operating manual for any AI agent (Claude, Codex, etc.) or human working on this repository. Its goal is to turn the existing single-camera pitching timing MVP into a **validated, research-grade portfolio piece** (a short paper, a reproducible repo, a demo). Load this whole file into context before doing any work. It was written and fact-checked on **2026-09-23**. Section 11 lists what was verified and how.
 >
@@ -19,6 +19,7 @@
 7. **Commit at the end of each sub-task** with a clear message. Don't push unless asked.
 8. **Environment.** The code runs on Ziyu's Mac in `.venv` (Python + `mediapipe==0.10.21`). Command prefix used so far: `MPLCONFIGDIR=/private/tmp/mplconfig .venv/bin/python`. If you are running in the Cowork Linux VM (`device_bash`), note that the Mac `.venv` will not run there, and `mediapipe` is **not** installed there (checked 2026-09-23). Either install into a separate Linux venv, or ask Ziyu to run MediaPipe steps on the Mac. OBP-only work (Phase 4) needs no MediaPipe and can run anywhere.
 9. **Privacy.** `videos/`, `outputs/`, and `labels/pitch_labels.json` are git-ignored. Keep it that way. Only publish sample clips with written consent from the person in them.
+10. **Backend work (Phase 8) is in teaching mode.** Ziyu writes the parts assigned to him (8.0). The agent scaffolds, explains, and reviews, and never silently fills in his parts.
 
 ---
 
@@ -30,6 +31,7 @@
 | **GitHub repo** | Clean package, one-command reproduction of every table and figure, tests, CI, README first screen with the result table and a demo GIF | Engineers, interviewers |
 | **Demo video** (60–90 s) | Problem → system → evidence → one honest failure → next step (3D) | Anyone who has 1 minute |
 | **Streamlit app** (existing, lightly polished) | Proof the system runs end to end | Supporting evidence only |
+| **PitchLab API** (Phase 8) | Async backend around the analyzer: FastAPI, Postgres, Redis workers, Docker, CI, load-test numbers, ADRs | Backend SWE interviewers |
 
 **The central claim** the whole product must support (numbers to be filled in from results):
 
@@ -343,6 +345,137 @@ Save them to `data/external/obp/` (git-ignored). Write `scripts/download_obp.sh`
 - **Demo video storyboard:** 0–10 s problem · 10–30 s system running · 30–50 s evidence table animating, with human vs algorithm · 50–70 s one honest failure (e.g. 30 fps side view) · 70–90 s next step, two-camera 3D.
 - **App:** optional deployment (Streamlit Community Cloud or Hugging Face Spaces). Warn users that uploads must be their own videos, and don't store uploads.
 
+### Phase 8: Backend service "PitchLab API" (≈3–4 weeks at ~10 h/week; runs in parallel with Phases 1–3)
+
+**Why.** Ziyu must be able to *do* backend SWE work and prove it in interviews, not just show a repo. This project has real backend problems that justify every component. Analysis is CPU-heavy and takes seconds to minutes per video. Videos are large. Jobs fail mid-run. The same file gets uploaded twice. Detector versions change, so stored results go stale.
+
+**Scope: core, local-only.** FastAPI + PostgreSQL + Alembic + a Redis job queue + a worker that runs the existing analyzer + Docker Compose + pytest (unit and integration) + GitHub Actions CI + a load test. **Out of scope:** user accounts/auth, cloud deployment, paid services. Add them only if Ziyu asks.
+
+**Relation to `CODEX_HARNESS.md`.** The harness forbids databases, auth, and deployment. That rule still applies to the **analysis core** (`analyze_pitch_timing.py` and the research scripts), which must stay importable and runnable without any backend. The backend lives in its own folder (`backend/`) and only *calls* the analyzer. It must not change detector logic.
+
+#### 8.0 Teaching mode (mandatory for any agent)
+
+The deliverable is Ziyu's skill, not only the code. Split the work:
+
+| Owner | Work |
+|---|---|
+| **Agent** | Project skeleton, Dockerfiles, `docker-compose.yml`, CI workflow, config/settings module, logging setup, test fixtures, *one* fully worked example endpoint plus its tests (as a pattern to copy), the load-test harness, code review of Ziyu's work |
+| **Ziyu writes** | SQLAlchemy models and the first Alembic migration (8.2); the athletes/sessions/videos endpoints (8.3); the job state machine and retry logic (8.4); the idempotency check (8.5); the tests for everything he wrote; all ADRs (8.8), in his own words |
+
+Rules:
+- For Ziyu-owned items, the agent creates the file with a docstring spec, type signatures, and failing tests marked `# TODO(ziyu)`. Explain concepts and review diffs, but **do not write the implementation** unless Ziyu explicitly says "write it for me" for that specific item. If he does, record it in `docs/backend_ownership.md`, so it is clear which parts he wrote.
+- After each Ziyu-owned item, run a short **defense check**: ask him 2–3 "why / what if" questions from 8.10 and note the answers in `docs/backend_ownership.md`.
+
+#### 8.1 Architecture
+
+```
+Client ──► FastAPI (api) ──► PostgreSQL
+              │  enqueue job_id
+              ▼
+            Redis ──► worker × N ──► analyzer (analyze_pitch_timing.py, unchanged)
+                          │
+                          └──► storage/ (local volume behind a Storage interface)
+```
+
+Layout:
+```
+backend/
+  app/ (main.py, config.py, db.py, models.py, schemas.py, storage.py, queue.py, logging.py)
+  app/api/ (athletes.py, sessions.py, videos.py, jobs.py, results.py, admin.py, health.py)
+  worker/ (worker.py, tasks.py)
+  migrations/ (Alembic)
+  tests/ (unit/, integration/)
+  loadtest/ (locustfile.py, README.md)
+  Dockerfile.api, Dockerfile.worker, docker-compose.yml, pyproject.toml or requirements*.txt
+docs/adr/  docs/backend_ownership.md
+```
+Pin exact library versions in a lock or requirements file when scaffolding. Record them in the README.
+
+#### 8.2 Data model (PostgreSQL)
+
+- `athletes(id, code UNIQUE, throwing_hand CHECK IN ('right','left'), height_m NULL, created_at)`
+- `sessions(id, athlete_id FK, recorded_on DATE, location, notes, created_at)`
+- `videos(id, session_id FK, sha256 CHAR(64), storage_key, filename, bytes, fps, width, height, view, created_at, UNIQUE(session_id, sha256))`
+- `analysis_jobs(id, video_id FK, detector_version, status CHECK IN ('queued','running','succeeded','failed'), attempts INT, max_attempts INT, idempotency_key UNIQUE, error TEXT NULL, queued_at, started_at, finished_at, worker_id)`
+- `pitches(id, job_id FK, window_index, start_frame, end_frame)`
+- `events(id, pitch_id FK, name CHECK IN (...), frame, time_s, method ('auto'|'manual'), confidence NULL)`
+- Indexes: `analysis_jobs(status, queued_at)`, `analysis_jobs(video_id, detector_version)`, `events(pitch_id, name)`.
+- Every change goes through an Alembic migration. There must be at least one non-trivial second migration (for example, adding `view` to `videos` with a backfill), so the history shows a real schema evolution.
+
+#### 8.3 API (REST, JSON, OpenAPI auto-docs at `/docs`)
+
+- `POST/GET /athletes`, `GET /athletes/{id}`; `POST/GET /athletes/{id}/sessions`
+- `POST /sessions/{id}/videos` (multipart upload; stream to storage while hashing; reject non-video types and files above a size limit); `GET /videos/{id}`
+- `POST /videos/{id}/analyze` → 202 + job, with `Idempotency-Key` header support; `GET /jobs/{id}`; `GET /jobs?status=&limit=&cursor=`
+- `GET /videos/{id}/results?detector_version=` (defaults to the latest succeeded)
+- `POST /admin/reanalyze?detector_version=` (backfill: enqueue jobs for videos without results at that version)
+- `GET /health` (DB + Redis reachable), `GET /metrics` (optional, Prometheus text)
+- Conventions: cursor pagination; a single error shape `{"error": {"code", "message", "details"}}`; Pydantic validation; 404/409/422 used correctly.
+
+#### 8.4 Job lifecycle and reliability
+
+- State machine: `queued → running → succeeded | failed`. Only allowed transitions. Enforce them in one function with unit tests for every illegal transition.
+- Retries: on exception, `attempts += 1`. Re-enqueue with exponential backoff plus jitter while `attempts < max_attempts`, else `failed` with the error stored.
+- Crash safety: a job stuck in `running` longer than a timeout is re-queued by a reaper. Test this by killing a worker mid-job (integration test or scripted demo).
+- The worker writes results in **one DB transaction**, so there are no half-written results.
+
+#### 8.5 Idempotency and dedup
+
+- Same `(session, sha256)` upload → return the existing video (200) instead of creating a duplicate.
+- Same `Idempotency-Key`, or the same `(video_id, detector_version)` while a job is queued or running → return the existing job.
+- Enforce with DB unique constraints (not only application checks), plus a test that fires concurrent duplicate requests.
+
+#### 8.6 Versioned results
+
+- Every result row is tied to `analysis_jobs.detector_version` (from `analyze_pitch_timing.DETECTOR_VERSION`) and stores the analyzer's `environment` block.
+- Note on the environment: the worker container runs Linux. On Apple-silicon Docker that is linux/arm64, where `mediapipe==0.10.21` is not available (verified 2026-09-23: only ≤0.10.18 and 1.0.x install on aarch64). Pin a version that installs, record it, and **never mix backend results with the Mac-native research numbers.** The backend is a product demo; the paper's numbers come from `scripts/mac_baseline.sh` and later Mac runs.
+
+#### 8.7 Testing, CI, observability
+
+- Unit tests: the state machine, idempotency logic, schemas, storage.
+- Integration tests: a real Postgres and Redis (Docker services in CI, or testcontainers), API → queue → worker using a **fake analyzer** that returns fixed events instantly. Add one slow, opt-in test with the real analyzer on a tiny clip.
+- Test coverage report in CI. GitHub Actions: lint (ruff), type check (mypy on `backend/app`), tests.
+- JSON logs with a request id carried from API to job. Health endpoint. Optional metrics: jobs by status, queue wait time, job duration.
+
+#### 8.8 ADRs (Ziyu writes; ½ page each, in `docs/adr/`)
+
+1. The queue choice: Redis + RQ vs Celery vs a Postgres `SELECT … FOR UPDATE SKIP LOCKED` table
+2. Idempotency strategy
+3. Versioned results and backfill
+4. Local storage behind an interface (and how S3 would slot in)
+5. Why the analyzer stays a library, not a service
+
+#### 8.9 Load test and scaling result (the headline number)
+
+- Locust: N users upload small clips and poll results. The worker uses the **fake analyzer with a fixed, realistic sleep** (for example the median real analysis time measured once), so the test measures the backend, not MediaPipe.
+- Run 1, 2, and 4 workers. Report throughput (jobs/min), API p50/p95 latency, queue-wait p95, and the error rate. Put the table in the README and `docs/load_test.md` with the machine specs.
+- Expected shape: throughput scales with workers until CPU-bound. Explain where it stops scaling and why.
+
+#### 8.10 Defense checklist (Ziyu must answer these without notes)
+
+1. 1000 users upload at once. What breaks first, and what would you change?
+2. A worker dies halfway through a job. What happens to the job and the partial results?
+3. The same video is uploaded twice in parallel. Walk through the exact code path and DB constraint.
+4. You need to add a column to a table with a million rows. How do you migrate safely?
+5. Detector 1.1 ships. How do old results stay valid, and how do you backfill?
+6. Why a queue instead of running the analysis inside the request?
+7. How do you test the worker without running MediaPipe?
+8. Where are the transaction boundaries, and why there?
+
+#### 8.11 Acceptance
+
+- `docker compose up` starts api, worker, postgres, and redis; the README quickstart works from a clean clone.
+- CI is green: ruff, mypy, unit and integration tests. Coverage of `backend/app` ≥ 80%.
+- Kill-a-worker demo recovers; the concurrent duplicate test passes.
+- The load-test table exists with real numbers.
+- All 5 ADRs are written by Ziyu; `docs/backend_ownership.md` lists who wrote what, plus the defense-check notes.
+- The analysis core still runs standalone, and `tests/` (the core tests) still pass.
+
+**Resume bullet template** (fill in from the load test only):
+"Built an async video-analysis backend (FastAPI, PostgreSQL, Redis workers, Docker) with idempotent uploads, retry with backoff, crash recovery, and versioned results; sustained `<X>` jobs/min at p95 API latency `<Y>` ms with 4 workers."
+
+**Market note (checked 2026-09-23).** Across Singapore backend postings, Java appears most often (≈45%), then Python (≈29%). Common extras are Spring Boot, Kafka, microservices, CI/CD, and cloud (source: freehire.me Singapore backend role stats). Python is right for this project. For Java-heavy targets, a later small Spring Boot service (for example a read-only results API) can close the gap.
+
 ---
 
 ## 6. Guardrails: never claim these
@@ -367,6 +500,7 @@ Save them to `data/external/obp/` (git-ignored). Write `scripts/download_obp.sh`
 | 5 | Pose estimation internals, 3D geometry, proxy design | CV / 3D vision intern, perception research |
 | 6 | Scientific writing, research communication | Master's admissions (SOP evidence), research roles |
 | 7 | Packaging, CI, deployment, product communication | SWE intern, full-stack / AI systems |
+| 8 | REST API design, relational modeling and migrations, async job queues, idempotency, retries and crash recovery, integration testing, Docker/CI, load testing, ADRs | **Backend SWE intern**, AI/ML platform or backend intern, full-stack |
 
 Real-posting grounding (checked 2026-09-23):
 - The Cleveland Guardians "Biomechanics Analyst, Baseball R&D" posting asks for R or Python, biomechanics data experience, and time-series modeling; it prefers SQL and knowledge of public biomechanics research.
@@ -391,6 +525,7 @@ Real-posting grounding (checked 2026-09-23):
 | 4–6 | Phase 4 complete; Phase 3 |
 | 6–8 | Phase 5; paper draft (Phase 6) |
 | 8–10 | Phase 7; paper revision; README/demo |
+| 2–6 (parallel) | Phase 8 backend: week 2 skeleton + models; week 3 API + state machine; week 4 idempotency + tests + CI; week 5 load test + ADRs + defense check |
 
 ---
 
@@ -432,6 +567,8 @@ Real-posting grounding (checked 2026-09-23):
 | Job requirements (Section 7) | Fetched the two postings linked in Section 12 |
 | Appendix A code reproduces Section 3.3 table exactly | Extracted the code block from this file and ran it on OBP data |
 | Trunk peak uses `peak_in_frame_window` (plain max) | Read `build_timing_report` (≈ lines 1792–1823) |
+| Singapore backend market stats (Java ≈45%, Python ≈29%, etc.) | Fetched freehire.me Singapore backend role page on 2026-09-23 |
+| `mediapipe==0.10.21` unavailable on linux/aarch64 (≤0.10.18, 1.0.x only) | `pip install` in the Cowork Linux VM |
 | **Not verified:** exact ISBS deadlines and templates; phone 240 fps support on Ziyu's specific device; MediaPipe world-landmark axis convention (verify empirically in Phase 5); author lists of the related-work papers (verify before citing) | — |
 
 ---
@@ -446,6 +583,7 @@ Real-posting grounding (checked 2026-09-23):
 - Role of pelvis and trunk biomechanics in generating ball velocity in baseball pitching (PubMed 35836313): https://pubmed.ncbi.nlm.nih.gov/35836313/
 - Koo, T. K., & Li, M. Y. (2016). A guideline of selecting and reporting intraclass correlation coefficients for reliability research. *Journal of Chiropractic Medicine*, 15(2), 155–163.
 - Bland, J. M., & Altman, D. G. (1986). Statistical methods for assessing agreement between two methods of clinical measurement. *The Lancet*, 327(8476), 307–310.
+- Singapore backend role stats: https://freehire.me/roles/backend/singapore
 - Job postings: Cleveland Guardians Biomechanics Analyst: https://sportstechjobs.com/biomechanics-analyst-baseball-research-and-development-cleveland-guardians/667c77791faf20c5797ea379 ; MLB Applied Biomechanics Engineer: https://simplify.jobs/p/d8ffcddf-0c49-41b2-a04d-e74b54e1c3d6/Applied-Biomechanics-Engineer
 
 ---
@@ -525,3 +663,8 @@ BR-bias pilot: for each pitch, compute the 3D speed of `wrist_jc` and `hand_jc` 
 - Phase 5: `--save-world-landmarks`, then the ground-plane proxy on real video
 - Detector 1.1 candidate (ms-based windows) evaluated on OBP plus dev
 - Paper skeleton with the RQ2 section written
+
+### 2026-09-23: Phase 8 (backend) added to the plan
+
+- Ziyu wants to be able to do backend SWE work and show it. Chosen scope: **core backend, local-only** (no auth, no cloud deployment).
+- Teaching mode is mandatory (Section 5, Phase 8.0, and rule 10). Next step: the agent scaffolds `backend/`, creates the Ziyu-owned files as specs with failing tests, and walks him through 8.2 (data model) first.
