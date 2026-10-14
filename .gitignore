@@ -17,3 +17,7 @@ videos/
 labels/pitch_labels.json
 labels/pitch_labels_v2.json
 data/external/
+
+# Generated local review and repository-analysis artifacts
+.lavish/
+graphify-out/
