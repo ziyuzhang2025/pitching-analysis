@@ -13,6 +13,19 @@ The goal is to help inspect basic pitching sequence timing:
 - trunk peak rotation
 - approximate ball release
 
+## Backend development status
+
+The repository also contains a FastAPI/PostgreSQL/Redis/RQ backend scaffold in
+[`backend/`](backend/README.md). Its infrastructure and athlete example exist, but the
+core session, upload, job, worker and result flows are intentionally unfinished
+exercises. Do not describe the API as end-to-end operational yet.
+
+Backend work is now the primary execution track. Start with the
+[`Pitch Lab execution guide`](docs/pitchlab-execution/README.md), which records the
+architecture, task order, verification evidence and ownership rules. Ziyu implements
+the seven core backend exercises; agents explain and review unless a specific exercise
+is explicitly delegated.
+
 Everything runs on your local machine. There is no cloud API and no API key.
 
 ## Current Features
