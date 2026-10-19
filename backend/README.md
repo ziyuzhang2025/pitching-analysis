@@ -86,7 +86,7 @@ All settings are environment variables (see `.env.example` and `app/config.py`):
 |---|---|---|
 | `app/config.py`, `db.py`, `logging.py`, `errors.py`, `pagination.py`, `storage.py`, `queue.py`, `analyzers.py`, `main.py` | Infrastructure | Claude |
 | `app/models/athlete.py`, `app/api/athletes.py`, `app/api/health.py`, `migrations/versions/0001_*` | Worked example | Claude |
-| `app/models/pipeline.py`, `migrations/versions/0002_*` | Exercise 1 | **Ziyu** |
+| `app/models/pipeline.py`, `migrations/versions/0002_*` | Exercise 1 | Codex, explicitly delegated by Ziyu |
 | `app/jobs/state.py` | Exercise 2 | **Ziyu** |
 | `app/api/sessions.py`, `app/api/videos.py` | Exercises 3–4 | **Ziyu** |
 | `app/services/idempotency.py` | Exercise 4 | **Ziyu** |
@@ -95,4 +95,4 @@ All settings are environment variables (see `.env.example` and `app/config.py`):
 | `app/api/results.py`, `app/api/admin.py` | Exercise 7 | **Ziyu** |
 | `worker/run.py`, `loadtest/`, `scripts/`, Docker, CI | Tooling | Claude |
 
-Who wrote what, in detail: `docs/backend_ownership.md`.
+Who wrote what, including delegation details: `docs/backend_ownership.md`.

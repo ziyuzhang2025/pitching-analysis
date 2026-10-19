@@ -1,43 +1,150 @@
-"""EXERCISE 1 (Ziyu): the rest of the data model.
+"""Sessions, videos, analysis jobs, pitches, and detected events."""
 
-TODO(ziyu): define these SQLAlchemy models here, following app/models/athlete.py,
-then write migration 0002 (see docs/backend_exercises.md, Exercise 1). Tests:
-tests/exercises/test_ex1_models.py.
+from __future__ import annotations
 
-Required classes and tables (column names are part of the contract):
+from datetime import date, datetime
 
-TrainingSession  -> table "sessions"
-    id PK; athlete_id FK athletes.id NOT NULL; recorded_on DATE NOT NULL;
-    location VARCHAR(200) NULL; notes TEXT NULL; created_at timestamptz default now()
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-Video -> table "videos"
-    id PK; session_id FK sessions.id NOT NULL; sha256 VARCHAR(64) NOT NULL;
-    storage_key VARCHAR(200) NOT NULL UNIQUE; filename VARCHAR(255) NOT NULL;
-    bytes BIGINT NOT NULL; fps FLOAT NULL; width INT NULL; height INT NULL;
-    view VARCHAR(20) NULL (CHECK: NULL or one of app.models.enums.CAMERA_VIEWS);
-    created_at timestamptz default now()
-    UNIQUE (session_id, sha256)            <- same file in the same session = same video
+from app.db import Base
 
-AnalysisJob -> table "analysis_jobs"
-    id PK; video_id FK videos.id NOT NULL; detector_version VARCHAR(40) NOT NULL;
-    status VARCHAR(10) NOT NULL default 'queued' (CHECK: one of JobStatus values);
-    attempts INT NOT NULL default 0; max_attempts INT NOT NULL default 3;
-    idempotency_key VARCHAR(100) NULL UNIQUE; error TEXT NULL;
-    queued_at timestamptz NOT NULL default now(); started_at timestamptz NULL;
-    finished_at timestamptz NULL; worker_id VARCHAR(100) NULL
-    INDEX (status, queued_at); INDEX (video_id, detector_version)
-    PARTIAL UNIQUE INDEX "uq_analysis_jobs_active" ON (video_id, detector_version)
-        WHERE status IN ('queued', 'running')   <- at most one active job per video+version
 
-Pitch -> table "pitches"
-    id PK; job_id FK analysis_jobs.id ON DELETE CASCADE NOT NULL; window_index INT NOT NULL;
-    start_frame INT NOT NULL; end_frame INT NOT NULL; UNIQUE (job_id, window_index)
+class TrainingSession(Base):
+    __tablename__ = "sessions"
 
-Event -> table "events"
-    id PK; pitch_id FK pitches.id ON DELETE CASCADE NOT NULL; name VARCHAR(40) NOT NULL;
-    frame INT NOT NULL; time_s FLOAT NOT NULL; method VARCHAR(10) NOT NULL default 'auto'
-    (CHECK: one of EVENT_METHODS); confidence FLOAT NULL; INDEX (pitch_id, name)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    athlete_id: Mapped[int] = mapped_column(ForeignKey("athletes.id"), nullable=False)
+    recorded_on: Mapped[date] = mapped_column(Date, nullable=False)
+    location: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
-Also add relationships you find useful (e.g. Pitch.events), and export every
-class from app/models/__init__.py.
-"""
+    videos: Mapped[list[Video]] = relationship(back_populates="session")
+
+
+class Video(Base):
+    __tablename__ = "videos"
+    __table_args__ = (
+        CheckConstraint(
+            "view IS NULL OR view IN "
+            "('arm_side', 'glove_side', 'behind', 'rear_oblique', 'front', 'other')",
+            name="view",
+        ),
+        UniqueConstraint("session_id", "sha256"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[int] = mapped_column(ForeignKey("sessions.id"), nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(200), unique=True, nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    bytes: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fps: Mapped[float | None] = mapped_column(Float, nullable=True)
+    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    view: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[TrainingSession] = relationship(back_populates="videos")
+    jobs: Mapped[list[AnalysisJob]] = relationship(back_populates="video")
+
+
+class AnalysisJob(Base):
+    __tablename__ = "analysis_jobs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')", name="status"
+        ),
+        Index("ix_analysis_jobs_status_queued_at", "status", "queued_at"),
+        Index(
+            "ix_analysis_jobs_video_id_detector_version", "video_id", "detector_version"
+        ),
+        Index(
+            "uq_analysis_jobs_active",
+            "video_id",
+            "detector_version",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    video_id: Mapped[int] = mapped_column(ForeignKey("videos.id"), nullable=False)
+    detector_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(10), server_default="queued", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, server_default="0", nullable=False)
+    max_attempts: Mapped[int] = mapped_column(Integer, server_default="3", nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String(100), unique=True, nullable=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    queued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    worker_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    video: Mapped[Video] = relationship(back_populates="jobs")
+    pitches: Mapped[list[Pitch]] = relationship(
+        back_populates="job", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class Pitch(Base):
+    __tablename__ = "pitches"
+    __table_args__ = (UniqueConstraint("job_id", "window_index"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("analysis_jobs.id", ondelete="CASCADE"), nullable=False
+    )
+    window_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    start_frame: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_frame: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    job: Mapped[AnalysisJob] = relationship(back_populates="pitches")
+    events: Mapped[list[Event]] = relationship(
+        back_populates="pitch", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class Event(Base):
+    __tablename__ = "events"
+    __table_args__ = (
+        CheckConstraint("method IN ('auto', 'manual')", name="method"),
+        Index("ix_events_pitch_id_name", "pitch_id", "name"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    pitch_id: Mapped[int] = mapped_column(
+        ForeignKey("pitches.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(40), nullable=False)
+    frame: Mapped[int] = mapped_column(Integer, nullable=False)
+    time_s: Mapped[float] = mapped_column(Float, nullable=False)
+    method: Mapped[str] = mapped_column(String(10), server_default="auto", nullable=False)
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    pitch: Mapped[Pitch] = relationship(back_populates="events")
