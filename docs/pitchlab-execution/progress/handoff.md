@@ -2,9 +2,9 @@
 
 Read [README](../README.md) first.
 
-Last action (2026-10-14): made backend-first execution authoritative, refreshed the evidence preflight and refined [task 05.01](../tasks/05-backend-completion/01-models-and-migration.md) to READY. Root research tests passed 20/20 using isolated temporary pytest. Docker remained unavailable, so backend integration tests were not run. Historical outputs were hashed but their source-video provenance is missing.
+Last action (2026-10-19): Ziyu explicitly delegated [task 05.01](../tasks/05-backend-completion/01-models-and-migration.md). Codex implemented and attributed the five pipeline models, exports, and migration `0002`. The focused suite passed 19/19; migration downgrade/upgrade completed; non-exercise tests passed 26/26; Ruff and mypy passed. An unfiltered suite remains red only in unimplemented Exercises 2–7.
 
-Next: Ziyu implements Exercise 1 models/migration. Before tests, start explicitly disposable PostgreSQL/Redis; the fixtures drop the configured database's public schema and flush Redis DB 15. Do not label scaffolded behavior as operational.
+Next: Ziyu completes the Exercise 1 capability defense. Do not mark the task fully defended or claim independent authorship until that result is recorded. Then activate Exercise 2. Before any backend integration run, confirm PostgreSQL/Redis are disposable; the fixtures drop the configured database's public schema and flush Redis DB 15.
 
 Preserve user changes and the backend exercise ownership policy. Do not run the destructive backend fixtures against an existing development/shared database or Redis database.
 

@@ -60,3 +60,54 @@ Graphify detected 170 files (77 code, 86 documents, 3 papers, 4 images) and no s
 Semantic extraction produced a documentation graph with 233 nodes, 241 edges and 26 communities. The diagnostic reported no dangling, missing, collapsed or self-loop edges. Outputs are in `graphify-out/` (`graph.html`, `GRAPH_REPORT.md`, `graph.json`). Recorded extraction usage: 48,340 input tokens and 35,740 output tokens. Because code AST extraction was unavailable, the graph is a documentation map, not complete proof of code relationships.
 
 Final instruction audit checked 128 local links across the root README and 69 execution-guide Markdown files: zero broken targets. Exactly one task is READY: `05-backend-completion/01-models-and-migration.md`; the active-task pointer resolves to it. `git diff --check` reported no tracked whitespace errors. Root `README.md` is modified; the execution guide and graph outputs remain untracked. No commit, push, database mutation or backend exercise implementation was performed.
+
+## 2026-10-19 — Exercise 1 models and migration
+
+Ziyu explicitly delegated Exercise 1 implementation to Codex. Work ran on branch
+`codex/exercise-1-models` with a Python 3.12.13 backend virtual environment and newly
+created local Compose services: PostgreSQL 16 and Redis 7. The fixtures used disposable
+database `pitchlab_test` and Redis database 15.
+
+TDD observations:
+
+- Before implementation, `pytest tests/exercises/test_ex1_models.py -x -q` failed at
+  `test_models_are_exported` because `app.models.TrainingSession` was missing.
+- After adding the models and exports but before migration `0002`, the same command
+  passed the export test and failed because table `analysis_jobs` was absent.
+- After generating, reviewing, and formatting migration `0002`, the focused suite
+  reported `19 passed in 1.04s`.
+
+Migration rehearsal against `pitchlab_test`:
+
+```sh
+DATABASE_URL=postgresql+psycopg://pitchlab:pitchlab@localhost:5432/pitchlab_test \
+  .venv/bin/alembic upgrade head
+DATABASE_URL=postgresql+psycopg://pitchlab:pitchlab@localhost:5432/pitchlab_test \
+  .venv/bin/alembic downgrade 0001
+DATABASE_URL=postgresql+psycopg://pitchlab:pitchlab@localhost:5432/pitchlab_test \
+  .venv/bin/alembic upgrade head
+```
+
+Observed downgrade `0002 -> 0001`, upgrade `0001 -> 0002`, and final revision
+`0002 (head)`.
+
+Regression and static checks from `backend/`:
+
+```text
+pytest -m "not ziyu" -q  -> 26 passed, 72 deselected in 1.03s
+ruff check .             -> All checks passed
+mypy                     -> no issues in 28 source files
+```
+
+A deliberate unfiltered `pytest -q` run reported `45 passed, 53 failed`. All failures
+are the expected, still-unimplemented Exercises 2–7; no Exercise 1 or agent-owned test
+failed. Exercise 1's system gate is verified. Ziyu's capability defense is pending, and
+the delegated implementation must not be presented as independently authored work.
+
+`python scripts/progress.py` reported Exercise 1 `19/19 done` and Exercises 2–7
+`todo`, matching the intended staged exercise state.
+
+`alembic check` against `pitchlab_test` reported `No new upgrade operations detected`,
+confirming the applied migration and SQLAlchemy metadata remained aligned after review.
+An independent read-only review found no schema or migration defect. It identified and
+corrected one attribution inconsistency in `backend/README.md`.
